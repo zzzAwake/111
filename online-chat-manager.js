@@ -5,22 +5,18 @@
 
 class OnlineChatManager {
     constructor() {
-        this.ws = null;
+        this.supabase = null;
+        this.channel = null;
         this.userId = null;
         this.nickname = null;
         this.avatar = null;
         this.serverUrl = null;
+        this.serverKey = null; // Supabase Key
         this.isConnected = false;
         this.friendRequests = [];
         this.onlineFriends = [];
-        this.reconnectTimer = null;
-        this.heartbeatTimer = null;
+        this.onlineUsersCache = new Map(); // Cache for fast user lookup
         this.shouldAutoReconnect = false;
-        this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = 999;
-        this.heartbeatMissed = 0;
-        this.maxHeartbeatMissed = 3;
-        this.lastHeartbeatTime = null;
 
         // 独立的聊天数据存储 (不使用QQ的 state.chats / db.chats)
         this.chats = {};          // { chatId: { id, name, avatar, lastMessage, timestamp, unread, history[], isGroup, members[] } }
@@ -30,6 +26,58 @@ class OnlineChatManager {
         this.myAiCharacter = null; // 当前用户拉入群聊的AI角色 { chatId(主屏幕chatId), originalName, avatar, ownerUserId }
         this.aiCharactersInGroup = {}; // groupId -> [{ characterId, originalName, avatar, ownerUserId, ownerNickname }]
         this.isAiResponding = false; // AI是否正在回复中
+        this.aiRequestLifecycle = {
+            requestId: null,
+            controller: null,
+            endState: 'idle',
+            retryCount: 0,
+            fallbackUsed: false,
+            provider: null,
+            updatedAt: 0
+        };
+    }
+
+    beginAiRequestLifecycle(requestId, controller, metadata = {}) {
+        this.aiRequestLifecycle = {
+            ...this.aiRequestLifecycle,
+            requestId,
+            controller,
+            endState: 'pending',
+            retryCount: 0,
+            fallbackUsed: false,
+            provider: metadata.provider || null,
+            updatedAt: Date.now()
+        };
+        this.isAiResponding = true;
+        return this.aiRequestLifecycle;
+    }
+
+    isCurrentAiRequest(requestId) {
+        return Boolean(requestId) && this.aiRequestLifecycle.requestId === requestId;
+    }
+
+    updateAiRequestLifecycle(requestId, nextState, metadata = {}) {
+        if (!this.isCurrentAiRequest(requestId)) {
+            return false;
+        }
+
+        this.aiRequestLifecycle = {
+            ...this.aiRequestLifecycle,
+            endState: nextState,
+            ...metadata,
+            updatedAt: Date.now()
+        };
+
+        if (nextState === 'completed' || nextState === 'errored' || nextState === 'aborted') {
+            this.isAiResponding = false;
+            this.aiRequestLifecycle = {
+                ...this.aiRequestLifecycle,
+                controller: null,
+                updatedAt: Date.now()
+            };
+        }
+
+        return true;
     }
 
     // ==================== 数据持久化 (独立于QQ) ====================
@@ -130,7 +178,7 @@ class OnlineChatManager {
                     this.reconnectAttempts = 0;
                     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
                     if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
-                    if (this.ws) { this.isConnected = false; try { this.ws.close(); } catch(e) {} this.ws = null; }
+                    if (this.isConnected) { this.disconnect(); }
                     this.updateConnectionUI(false);
                 }
                 this.saveSettings();
@@ -290,7 +338,10 @@ class OnlineChatManager {
     // ==================== 视图切换 ====================
 
     showView(viewId) {
-        document.querySelectorAll('#online-app-screen .online-app-view').forEach(v => v.classList.remove('active'));
+        const views = document.querySelectorAll('#online-app-screen .online-app-view');
+        for (const v of views) {
+            v.classList.remove('active');
+        }
         const view = document.getElementById(viewId);
         if (view) view.classList.add('active');
 
@@ -341,7 +392,9 @@ class OnlineChatManager {
                 userId: document.getElementById('online-app-my-id')?.value || '',
                 nickname: document.getElementById('online-app-my-nickname')?.value || '',
                 avatar: this.avatar || '',
-                serverUrl: document.getElementById('online-app-server-url')?.value || '',
+                // Save Supabase config
+                supabaseUrl: document.getElementById('online-app-supabase-url')?.value || document.getElementById('online-app-server-url')?.value || '',
+                supabaseKey: document.getElementById('online-app-supabase-key')?.value || document.getElementById('online-app-server-key')?.value || '',
                 wasConnected: this.shouldAutoReconnect
             };
             const str = JSON.stringify(settings);
@@ -349,17 +402,6 @@ class OnlineChatManager {
             localStorage.setItem('online-app-settings', JSON.stringify(settings));
         } catch (e) {
             console.error('保存连接APP设置失败:', e);
-            try {
-                const min = {
-                    enabled: document.getElementById('online-app-enable-switch')?.checked || false,
-                    userId: document.getElementById('online-app-my-id')?.value || '',
-                    nickname: document.getElementById('online-app-my-nickname')?.value || '',
-                    avatar: '',
-                    serverUrl: document.getElementById('online-app-server-url')?.value || '',
-                    wasConnected: this.shouldAutoReconnect
-                };
-                localStorage.setItem('online-app-settings', JSON.stringify(min));
-            } catch (err) { console.error('保存简化设置也失败:', err); }
         }
     }
 
@@ -377,7 +419,12 @@ class OnlineChatManager {
                 const idInput = document.getElementById('online-app-my-id');
                 const nickInput = document.getElementById('online-app-my-nickname');
                 const avatarPreview = document.getElementById('online-app-avatar-preview');
+                
+                // Supabase Inputs
+                const supabaseUrlInput = document.getElementById('online-app-supabase-url');
+                const supabaseKeyInput = document.getElementById('online-app-supabase-key');
                 const serverInput = document.getElementById('online-app-server-url');
+                const serverKeyInput = document.getElementById('online-app-server-key');
 
                 if (enableSwitch) {
                     enableSwitch.checked = s.enabled;
@@ -388,7 +435,15 @@ class OnlineChatManager {
                     this.userId = s.userId || null;
                 }
                 if (nickInput) nickInput.value = s.nickname || '';
-                if (serverInput) serverInput.value = s.serverUrl || '';
+                
+                // Load URL/Key
+                const url = s.supabaseUrl || s.serverUrl || '';
+                const key = s.supabaseKey || s.serverKey || '';
+                
+                if (supabaseUrlInput) supabaseUrlInput.value = url;
+                if (supabaseKeyInput) supabaseKeyInput.value = key;
+                if (serverInput) serverInput.value = url;
+                if (serverKeyInput) serverKeyInput.value = key;
 
                 if (s.avatar && (s.avatar.startsWith('data:image/') || s.avatar.startsWith('http'))) {
                     this.avatar = s.avatar;
@@ -424,18 +479,105 @@ class OnlineChatManager {
 
     // ==================== WebSocket连接 ====================
 
+    // ==================== 辅助方法 ====================
+
+    bindChannelListeners(channel) {
+        channel
+            .on('presence', { event: 'sync' }, () => this.syncOnlineUsers())
+            .on('broadcast', { event: 'friend_request' }, ({ payload }) => {
+                if (payload && payload.toUserId === this.userId) {
+                    this.onFriendRequest(payload);
+                }
+            })
+            .on('broadcast', { event: 'friend_request_accepted' }, ({ payload }) => {
+                if (payload && payload.toUserId === this.userId) {
+                    this.onFriendRequestAccepted(payload);
+                }
+            })
+            .on('broadcast', { event: 'friend_request_rejected' }, ({ payload }) => {
+                if (payload && payload.toUserId === this.userId) {
+                    this.onFriendRequestRejected(payload);
+                }
+            })
+            .on('broadcast', { event: 'dm' }, ({ payload }) => {
+                console.log('[Broadcast] 收到DM:', payload);
+                if (payload.toUserId === this.userId) {
+                    this.onReceiveMessage(payload);
+                }
+            })
+            .on('broadcast', { event: 'group_msg' }, ({ payload }) => {
+                console.log('[Broadcast] 收到群消息:', payload);
+                if (payload.members && payload.members.includes(this.userId) && payload.fromUserId !== this.userId) {
+                    this.onReceiveGroupMessage(payload);
+                }
+            })
+            .on('broadcast', { event: 'group_create' }, ({ payload }) => {
+                console.log('[Broadcast] 收到群创建:', payload);
+                if (payload.members && payload.members.some(m => m.userId === this.userId) && payload.creatorId !== this.userId) {
+                    this.onReceiveGroupMessage({ ...payload, type: 'receive_group_created' });
+                }
+            })
+            .on('broadcast', { event: 'ai_join' }, ({ payload }) => {
+                if (payload && payload.members && payload.members.includes(this.userId)) {
+                    this.onAiCharacterJoin(payload);
+                }
+            })
+            .on('broadcast', { event: 'ai_leave' }, ({ payload }) => {
+                if (payload && payload.members && payload.members.includes(this.userId)) {
+                    this.onAiCharacterLeave(payload);
+                }
+            });
+    }
+
+    async handleChannelStatus(topic, status, err) {
+        console.log(`[Supabase] 频道 '${topic}' 状态: ${status}`, err || '');
+        
+        if (status === 'SUBSCRIBED') {
+            await this.channel.track({
+                userId: this.userId,
+                nickname: this.nickname,
+                avatar: this.getSafeAvatar(),
+                onlineAt: new Date().toISOString()
+            });
+            this.onRegisterSuccess();
+            console.log(`[Supabase] ✅ 已成功加入频道: ${topic}`);
+        } else if (status === 'CHANNEL_ERROR') {
+            console.error(`[Supabase] ❌ 频道错误:`, err);
+            this.updateConnectionUI(false);
+            // 降级处理：不再弹窗，尝试自动重连
+            if (this.shouldAutoReconnect && !this.reconnectTimer) {
+                console.log('[Supabase] 检测到频道错误，3秒后尝试自动重连...');
+                this.reconnectTimer = setTimeout(() => {
+                    this.reconnectTimer = null;
+                    console.log('[Supabase] 执行自动重连...');
+                    this.connect();
+                }, 3000);
+            }
+        } else if (status === 'TIMED_OUT') {
+            console.warn(`[Supabase] ⚠️ 连接超时，正在重试...`);
+        } else if (status === 'CLOSED') {
+            console.log(`[Supabase] 🔌 频道已断开`);
+        }
+    }
+
     async connect() {
         const idInput = document.getElementById('online-app-my-id');
         const nickInput = document.getElementById('online-app-my-nickname');
+        const supabaseUrlInput = document.getElementById('online-app-supabase-url');
+        const supabaseKeyInput = document.getElementById('online-app-supabase-key');
         const serverInput = document.getElementById('online-app-server-url');
+        const serverKeyInput = document.getElementById('online-app-server-key');
 
         this.userId = idInput?.value.trim();
         this.nickname = nickInput?.value.trim();
-        this.serverUrl = serverInput?.value.trim();
+        
+        this.supabaseUrl = supabaseUrlInput?.value.trim() || serverInput?.value.trim();
+        this.supabaseKey = supabaseKeyInput?.value.trim() || serverKeyInput?.value.trim();
 
         if (!this.userId) { alert('请设置你的ID'); return; }
         if (!this.nickname) { alert('请设置你的昵称'); return; }
-        if (!this.serverUrl) { alert('请输入服务器地址'); return; }
+        if (!this.supabaseUrl) { alert('请输入Supabase URL'); return; }
+        if (!this.supabaseKey) { alert('请输入Supabase Key'); return; }
 
         // 重新加载该ID绑定的数据
         this.friendRequests = [];
@@ -444,44 +586,56 @@ class OnlineChatManager {
         this.loadOnlineFriends();
         this.loadChats();
 
-        // 关闭旧连接
-        if (this.ws) {
-            try { if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) this.ws.close(); } catch(e) {}
-            this.ws = null;
-            await new Promise(r => setTimeout(r, 300));
-        }
-
         this.updateConnectingUI();
 
         try {
-            this.ws = new WebSocket(this.serverUrl);
+            let cleanUrl = this.supabaseUrl;
+            if (!cleanUrl.startsWith('http')) cleanUrl = 'https://' + cleanUrl;
+            cleanUrl = cleanUrl.replace('://db.', '://');
+            console.log('正在连接 Supabase:', cleanUrl);
 
-            this.ws.onopen = () => {
-                const avatarToSend = this.getSafeAvatar();
-                this.send({ type: 'register', userId: this.userId, nickname: this.nickname, avatar: avatarToSend });
-            };
-
-            this.ws.onmessage = (event) => {
-                this.handleMessage(JSON.parse(event.data));
-            };
-
-            this.ws.onerror = (error) => {
-                console.error('WebSocket错误:', error);
-                this.updateConnectionUI(false);
-                alert('连接服务器失败，请检查服务器地址');
-            };
-
-            this.ws.onclose = () => {
-                const wasConnected = this.isConnected || this.shouldAutoReconnect;
-                this.isConnected = false;
-                this.updateConnectionUI(false);
-                if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
-                if (this.shouldAutoReconnect && wasConnected) {
-                    this.scheduleReconnect();
+            // 初始化 Client (如果尚未初始化或配置变更)
+            // @ts-ignore
+            if (!window.supabase) throw new Error('Supabase SDK 未加载');
+            
+            // 为了确保连接参数最新，这里我们总是重新创建 Client (开销很小)
+            // @ts-ignore
+            this.supabase = window.supabase.createClient(cleanUrl, this.supabaseKey, {
+                realtime: {
+                    params: { eventsPerSecond: 10 }
                 }
-            };
+            });
+            
+            // 使用符合规范的 Topic 名称 (scope:id:entity)
+            // 这里使用全局聊天室 'ephone:global:chat'
+            const CHANNEL_TOPIC = 'ephone:global:chat';
+            
+            // 检查是否已有同名频道 (复用逻辑)
+            // 注意：由于我们重建了Client，getChannels()是空的。
+            // 如果要支持跨页面复用，Client应该设为全局单例。
+            // 但考虑到这里的场景，我们只需确保不要在同一个实例上重复订阅。
+            
+            if (this.channel) {
+                console.log('[Supabase] 清理旧频道...');
+                await this.supabase.removeChannel(this.channel);
+            }
+
+            console.log(`[Supabase] 初始化新频道: ${CHANNEL_TOPIC}`);
+            this.channel = this.supabase.channel(CHANNEL_TOPIC, {
+                config: {
+                    presence: { key: this.userId },
+                    broadcast: { self: false }
+                }
+            });
+            
+            this.bindChannelListeners(this.channel);
+            
+            this.channel.subscribe((status, err) => {
+                this.handleChannelStatus(CHANNEL_TOPIC, status, err);
+            });
+
         } catch (error) {
-            console.error('连接失败:', error);
+            console.error('Supabase连接失败:', error);
             this.updateConnectionUI(false);
             alert('连接失败: ' + error.message);
         }
@@ -489,34 +643,76 @@ class OnlineChatManager {
 
     disconnect() {
         this.shouldAutoReconnect = false;
-        this.reconnectAttempts = 0;
-        if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
-
-        // 断线时通知移除所有我的AI角色
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            for (const [groupId, chars] of Object.entries(this.aiCharactersInGroup)) {
-                const myChar = chars.find(c => c.ownerUserId === this.userId);
-                if (myChar) {
-                    const chat = this.chats[groupId];
-                    this.send({
-                        type: 'ai_character_leave',
-                        groupId: groupId,
-                        characterId: myChar.characterId,
-                        characterName: myChar.originalName,
-                        members: chat ? chat.members.filter(m => !m.isAiCharacter || m.ownerUserId !== this.userId).map(m => m.userId) : []
-                    });
+        
+        if (this.supabase && this.channel) {
+            const channel = this.channel;
+            this.channel = null;
+            
+            // 使用 IIFE (Immediately Invoked Function Expression) 处理异步操作，不阻塞 UI
+            (async () => {
+                try {
+                    await this.supabase.removeChannel(channel);
+                } catch (e) {
+                    console.error('Supabase 移除频道失败:', e);
                 }
-            }
+            })();
         }
-
-        if (this.ws) { this.isConnected = false; this.ws.close(); this.ws = null; }
+        
+        this.supabase = null;
+        this.isConnected = false;
         this.updateConnectionUI(false);
         this.saveSettings();
     }
+    
+    syncOnlineUsers() {
+        if (!this.channel) return;
+        
+        const state = this.channel.presenceState();
+        this.onlineUsersCache.clear();
+        
+        // 将 Presence State 转换为 Map 方便查询
+        // key 是 presence_ref (Supabase 内部ID)，value 是用户数据数组
+        for (const key in state) {
+            const users = state[key];
+            if (Array.isArray(users)) {
+                users.forEach(user => {
+                    if (user.userId) {
+                        this.onlineUsersCache.set(user.userId, user);
+                    }
+                });
+            }
+        }
+        
+        console.log('在线用户已同步, 当前在线人数:', this.onlineUsersCache.size);
+    }
 
-    send(data) {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(data));
+    async send(data) {
+        if (!this.channel) {
+            console.warn('Supabase channel not connected, cannot send:', data);
+            return;
+        }
+
+        const typeToEvent = {
+            'send_message': 'dm',
+            'send_group_message': 'group_msg',
+            'create_group': 'group_create',
+            'friend_request': 'friend_request',
+            'accept_friend_request': 'friend_request_accepted',
+            'reject_friend_request': 'friend_request_rejected',
+            'ai_character_join': 'ai_character_join',
+            'ai_character_leave': 'ai_character_leave'
+        };
+
+        const event = typeToEvent[data.type] || 'unknown';
+
+        try {
+            await this.channel.send({
+                type: 'broadcast',
+                event: event,
+                payload: data
+            });
+        } catch (err) {
+            console.error('Failed to send broadcast:', err);
         }
     }
 
@@ -575,22 +771,28 @@ class OnlineChatManager {
         }
 
         doSearch() {
-            const input = document.getElementById('online-app-search-id');
-            const searchId = input?.value.trim();
-            if (!searchId) { alert('请输入要搜索的好友ID'); return; }
-            if (!this.isConnected) { alert('请先连接服务器'); return; }
-            // 显示搜索中状态
-            const resultDiv = document.getElementById('online-app-search-result');
-            if (resultDiv) resultDiv.innerHTML = '<div style="text-align:center;color:#999;padding:30px 20px;">搜索中...</div>';
-            console.log('[搜索好友] 发送搜索请求, searchId:', JSON.stringify(searchId), ', 我的ID:', JSON.stringify(this.userId));
-            this.send({ type: 'search_user', searchId });
-            // 5秒超时
-            this._searchTimeout = setTimeout(() => {
-                if (resultDiv && resultDiv.innerHTML.includes('搜索中')) {
-                    resultDiv.innerHTML = '<div style="text-align:center;color:#ff3b30;padding:30px 20px;">搜索超时，服务器未响应。<br>请检查服务器是否支持搜索功能。</div>';
-                }
-            }, 5000);
-        }
+        const input = document.getElementById('online-app-search-id');
+        const searchId = input?.value.trim();
+        if (!searchId) { alert('请输入要搜索的好友ID'); return; }
+        if (!this.isConnected) { alert('请先连接服务器'); return; }
+        
+        // 显示搜索中状态
+        const resultDiv = document.getElementById('online-app-search-result');
+        if (resultDiv) resultDiv.innerHTML = '<div style="text-align:center;color:#999;padding:30px 20px;">搜索中...</div>';
+        
+        console.log('[搜索好友] 本地查找, searchId:', searchId);
+        
+        // 使用本地缓存查找 Supabase Presence 数据
+        const target = this.onlineUsersCache.get(searchId);
+        
+        // 模拟短暂延迟以获得更好的UI体验
+        setTimeout(() => {
+            this.onSearchResult({
+                found: !!target,
+                user: target ? { userId: target.userId, nickname: target.nickname, avatar: target.avatar } : null
+            });
+        }, 200);
+    }
 
     onSearchResult(data) {
             if (this._searchTimeout) { clearTimeout(this._searchTimeout); this._searchTimeout = null; }
@@ -618,17 +820,22 @@ class OnlineChatManager {
             }
         }
 
-    sendFriendRequest(friendId, friendNickname, friendAvatar) {
+    async sendFriendRequest(friendId, friendNickname, friendAvatar) {
             if (!this.isConnected) { alert('未连接到服务器'); return; }
             if (friendId === this.userId) { alert('不能添加自己为好友'); return; }
             if (this.onlineFriends.some(f => f.userId === friendId)) { alert('已经是好友了'); return; }
-            this.send({
-                type: 'friend_request',
-                fromUserId: this.userId,
-                fromNickname: this.nickname,
-                fromAvatar: this.getSafeAvatar(),
-                toUserId: friendId
+            
+            await this.channel.send({
+                type: 'broadcast',
+                event: 'friend_request',
+                payload: {
+                    fromUserId: this.userId,
+                    fromNickname: this.nickname,
+                    fromAvatar: this.getSafeAvatar(),
+                    toUserId: friendId
+                }
             });
+            
             alert('好友申请已发送');
             // 关闭搜索弹窗
             const modal = document.getElementById('search-friend-modal');
@@ -695,13 +902,16 @@ class OnlineChatManager {
             this.saveOnlineFriends();
         }
 
-        // 通知服务器
-        this.send({
-            type: 'accept_friend_request',
-            fromUserId: req.fromUserId,
-            toUserId: this.userId,
-            toNickname: this.nickname,
-            toAvatar: this.getSafeAvatar()
+        // 通知发送者 (通过广播)
+        this.channel.send({
+            type: 'broadcast',
+            event: 'friend_request_accepted',
+            payload: {
+                toUserId: req.fromUserId,
+                fromUserId: this.userId,
+                fromNickname: this.nickname,
+                fromAvatar: this.getSafeAvatar()
+            }
         });
 
         // 创建聊天 (独立存储)
@@ -715,10 +925,19 @@ class OnlineChatManager {
         this.renderChatList();
     }
 
-    rejectFriendRequest(index) {
+    async rejectFriendRequest(index) {
         const req = this.friendRequests[index];
         if (!req) return;
-        this.send({ type: 'reject_friend_request', fromUserId: req.fromUserId, toUserId: this.userId });
+        
+        await this.channel.send({ 
+            type: 'broadcast', 
+            event: 'friend_request_rejected', 
+            payload: {
+                toUserId: req.fromUserId,
+                fromUserId: this.userId
+            }
+        });
+        
         this.friendRequests.splice(index, 1);
         this.saveFriendRequests();
         this.updateFriendRequestBadge();
@@ -1266,35 +1485,26 @@ class OnlineChatManager {
 
     // ==================== 心跳/重连/保活 ====================
 
+    // Supabase 自动管理心跳，不需要手动发送心跳
     startHeartbeat() {
-        if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-        this.heartbeatTimer = setInterval(() => {
-            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                this.heartbeatMissed++;
-                if (this.heartbeatMissed > this.maxHeartbeatMissed) {
-                    console.log('心跳超时，断开重连');
-                    this.ws.close();
-                    return;
-                }
-                this.send({ type: 'heartbeat', userId: this.userId });
-            }
-        }, 25000);
+        // Legacy: Supabase handles heartbeat automatically
     }
 
     scheduleReconnect() {
-            if (this.reconnectAttempts >= this.maxReconnectAttempts) return;
-            const delay = Math.min(3000 * Math.pow(1.5, this.reconnectAttempts), 60000);
-            this.reconnectAttempts++;
-            console.log(`[连接APP] ${delay / 1000}秒后重连 (第${this.reconnectAttempts}次)`);
-            this.reconnectTimer = setTimeout(() => {
-                if (this.shouldAutoReconnect && !this.isConnected) {
-                    const enableSwitch = document.getElementById('online-app-enable-switch');
-                    if (enableSwitch && enableSwitch.checked) {
-                        this.connect();
-                    }
+        if (this.reconnectAttempts >= this.maxReconnectAttempts) return;
+        const delay = Math.min(3000 * Math.pow(1.5, this.reconnectAttempts), 60000);
+        this.reconnectAttempts++;
+        console.log(`[连接APP] ${delay / 1000}秒后重连 (第${this.reconnectAttempts}次)`);
+        this.reconnectTimer = setTimeout(() => {
+            if (this.shouldAutoReconnect && !this.isConnected) {
+                const enableSwitch = document.getElementById('online-app-enable-switch');
+                if (enableSwitch && enableSwitch.checked) {
+                    this.connect();
                 }
-            }, delay);
-        }
+            }
+        }, delay);
+    }
+
 
     setupVisibilityListener() {
             document.addEventListener('visibilitychange', () => {
@@ -1324,8 +1534,12 @@ class OnlineChatManager {
             const enableSwitch = document.getElementById('online-app-enable-switch');
             if (enableSwitch && enableSwitch.checked) {
                 const idInput = document.getElementById('online-app-my-id');
+                const supabaseUrlInput = document.getElementById('online-app-supabase-url');
                 const serverInput = document.getElementById('online-app-server-url');
-                if (idInput?.value && serverInput?.value) {
+                
+                const hasUrl = (supabaseUrlInput && supabaseUrlInput.value) || (serverInput && serverInput.value);
+                
+                if (idInput?.value && hasUrl) {
                     console.log('[连接APP] 自动重连...');
                     setTimeout(() => this.connect(), 1000);
                 }
@@ -1382,7 +1596,9 @@ class OnlineChatManager {
                     keysToRemove.push(key);
                 }
             }
-            keysToRemove.forEach(k => localStorage.removeItem(k));
+            for (const k of keysToRemove) {
+                localStorage.removeItem(k);
+            }
 
             // 重置 UI
             const idInput = document.getElementById('online-app-my-id');
@@ -1463,7 +1679,7 @@ class OnlineChatManager {
         modal.classList.add('visible');
     }
 
-    confirmCreateGroup() {
+    async confirmCreateGroup() {
         const nameInput = document.getElementById('group-name-input');
         const checkboxes = document.querySelectorAll('.group-friend-checkbox:checked');
 
@@ -1513,12 +1729,15 @@ class OnlineChatManager {
         this.saveChats();
 
         // 通知服务器，让其他成员也创建群聊
-        this.send({
-            type: 'create_group',
-            groupId: groupId,
-            groupName: groupName,
-            members: members,
-            creatorId: this.userId
+        await this.channel.send({
+            type: 'broadcast',
+            event: 'group_create',
+            payload: {
+                groupId: groupId,
+                groupName: groupName,
+                members: members,
+                creatorId: this.userId
+            }
         });
 
         // 关闭弹窗
@@ -1919,6 +2138,7 @@ class OnlineChatManager {
 
         // 保存/加载AI角色数据
         saveAiCharacters() {
+            let cleanupStreamingPreview = () => {};
             try {
                 localStorage.setItem(this._getStorageKey('ai-characters'), JSON.stringify(this.aiCharactersInGroup));
             } catch (e) { console.error('保存AI角色数据失败:', e); }
@@ -1949,7 +2169,15 @@ class OnlineChatManager {
 
         // 调用API让AI角色回复
         async triggerAiCharacterResponse() {
-            if (this.isAiResponding) return;
+            const previousController = this.aiRequestLifecycle.controller;
+            const previousRequestId = this.aiRequestLifecycle.requestId;
+            if (previousController && previousRequestId) {
+                try {
+                    previousController.abort();
+                } catch (abortError) {
+                }
+                this.updateAiRequestLifecycle(previousRequestId, 'aborted');
+            }
 
             const groupId = this.activeChatId;
             const chat = this.chats[groupId];
@@ -1972,15 +2200,19 @@ class OnlineChatManager {
 
             // 获取API配置（使用拉入者的API设置）
             const apiConfig = window.state.apiConfig;
-            if (!apiConfig || !apiConfig.proxyUrl || !apiConfig.apiKey || !apiConfig.model) {
-                alert('请先在主屏幕的API设置中配置API');
+            const missingConfigFields = [];
+            if (!apiConfig || !apiConfig.proxyUrl) missingConfigFields.push('proxyUrl');
+            if (!apiConfig || !apiConfig.apiKey) missingConfigFields.push('apiKey');
+            if (!apiConfig || !apiConfig.model) missingConfigFields.push('model');
+            if (missingConfigFields.length > 0) {
+                alert(`API配置无效，缺少: ${missingConfigFields.join(', ')}。请先在主屏幕的API设置中补全。`);
                 return;
             }
 
-            this.isAiResponding = true;
             const btn = document.getElementById('online-app-ai-call-btn');
             if (btn) { btn.disabled = true; btn.textContent = '思考中...'; }
 
+            let cleanupStreamingPreview = () => {};
             try {
                 const { proxyUrl, apiKey, model } = apiConfig;
 
@@ -1990,39 +2222,222 @@ class OnlineChatManager {
                 // 构建消息历史
                 const messagesPayload = this.buildAiCharacterMessages(chat, myChar);
 
-                // 调用API
                 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
                 const isGemini = proxyUrl === GEMINI_API_URL;
-
-                let response;
-                if (isGemini) {
-                    const geminiConfig = this.toGeminiRequest(model, apiKey, systemPrompt, messagesPayload);
-                    response = await fetch(geminiConfig.url, geminiConfig.data);
-                } else {
-                    response = await fetch(`${proxyUrl}/v1/chat/completions`, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${getRandomValue(apiKey)}`
-                        },
-                        body: JSON.stringify({
-                            model: model,
-                            messages: [{ role: 'system', content: systemPrompt }, ...messagesPayload],
-                            temperature: (window.state.globalSettings && window.state.globalSettings.apiTemperature) || 0.8,
-                            stream: false
-                        })
+                const geminiConfig = isGemini ? this.toGeminiRequest(model, apiKey, systemPrompt, messagesPayload) : null;
+                const streamRequestId = (window.createStreamRequestId ? window.createStreamRequestId('online-group') : `online-group-${Date.now()}`);
+                const requestController = new AbortController();
+                this.beginAiRequestLifecycle(streamRequestId, requestController, {
+                    provider: isGemini ? 'gemini' : 'openai-compatible'
+                });
+                const isCurrentRequest = () => this.isCurrentAiRequest(streamRequestId);
+                const streamEventGuard = window.createStreamEventGuard
+                    ? window.createStreamEventGuard(streamRequestId)
+                    : ((event) => {
+                        if (!event || !event.requestId || event.requestId !== streamRequestId) {
+                            throw new Error('[streamChat] 协议错误: requestId 缺失或不匹配，已拒绝写入');
+                        }
+                        return event;
                     });
+                const streamFlags = window.getStreamRolloutFlags ? window.getStreamRolloutFlags() : { streamEnabled: false, fallbackEnabled: true };
+                let streamProtocolMeta = {
+                    requestId: streamRequestId,
+                    provider: isGemini ? 'gemini' : 'openai-compatible',
+                    fallbackUsed: false,
+                    endState: 'pending',
+                    ttft: null,
+                    streamEnabled: streamFlags.streamEnabled,
+                    fallbackEnabled: streamFlags.fallbackEnabled
+                };
+
+                const STREAMING_RENDER_THROTTLE_MS = 120;
+                let aiContent = '';
+                let streamDeltaCount = 0;
+                let streamRenderFlushCount = 0;
+                let streamStorageWriteCount = 0;
+                let pendingRenderTimer = null;
+                const streamingPreviewId = `online-ai-preview-${streamRequestId}`;
+                const streamingPreviewMessage = {
+                    role: 'ai',
+                    content: '',
+                    timestamp: Date.now(),
+                    senderUserId: myChar.characterId,
+                    senderNickname: myChar.originalName,
+                    senderAvatar: myChar.avatar,
+                    isAiCharacter: true,
+                    isStreamingPreview: true,
+                    streamRequestId,
+                    streamPreviewId: streamingPreviewId
+                };
+                const flushPreviewRender = () => {
+                    if (this.activeChatId === groupId) {
+                        this.renderMessages(chat);
+                        streamRenderFlushCount += 1;
+                    }
+                };
+                const schedulePreviewRender = () => {
+                    if (pendingRenderTimer) {
+                        return;
+                    }
+                    pendingRenderTimer = setTimeout(() => {
+                        pendingRenderTimer = null;
+                        flushPreviewRender();
+                    }, STREAMING_RENDER_THROTTLE_MS);
+                };
+                const flushPreviewRenderNow = () => {
+                    if (pendingRenderTimer) {
+                        clearTimeout(pendingRenderTimer);
+                        pendingRenderTimer = null;
+                    }
+                    flushPreviewRender();
+                };
+                cleanupStreamingPreview = () => {
+                    if (pendingRenderTimer) {
+                        clearTimeout(pendingRenderTimer);
+                        pendingRenderTimer = null;
+                    }
+                    if (!chat || !Array.isArray(chat.history)) return;
+                    const beforeLength = chat.history.length;
+                    chat.history = chat.history.filter(m => m.streamPreviewId !== streamingPreviewId);
+                    if (chat.history.length !== beforeLength && this.activeChatId === groupId) {
+                        this.renderMessages(chat);
+                    }
+                };
+
+                if (!Array.isArray(chat.history)) chat.history = [];
+                chat.history.push(streamingPreviewMessage);
+                if (this.activeChatId === groupId) {
+                    this.appendMessageToUI(streamingPreviewMessage, chat);
                 }
 
-                if (!response.ok) {
-                    const errData = await response.json().catch(() => ({}));
-                    throw new Error(errData.error?.message || `API错误: ${response.status}`);
-                }
+                await window.streamChat({
+                    proxyUrl,
+                    apiKey: getRandomValue(apiKey),
+                    model,
+                    systemPrompt,
+                    messagesPayload,
+                    isGemini,
+                    geminiConfig,
+                    signal: requestController.signal,
+                    requestId: streamRequestId,
+                    onStart: (event) => {
+                        if (!isCurrentRequest()) {
+                            return;
+                        }
+                        const safeEvent = streamEventGuard(event);
+                        streamProtocolMeta = {
+                            requestId: safeEvent.requestId,
+                            provider: safeEvent.provider,
+                            fallbackUsed: safeEvent.fallbackUsed,
+                            endState: safeEvent.endState,
+                            ttft: safeEvent.ttft ?? streamProtocolMeta.ttft,
+                            streamEnabled: streamFlags.streamEnabled,
+                            fallbackEnabled: streamFlags.fallbackEnabled
+                        };
+                        this.updateAiRequestLifecycle(streamRequestId, safeEvent.endState, {
+                            provider: safeEvent.provider,
+                            fallbackUsed: safeEvent.fallbackUsed
+                        });
+                    },
+                    onDelta: (event) => {
+                        if (!isCurrentRequest()) {
+                            return;
+                        }
+                        const safeEvent = streamEventGuard(event);
+                        streamProtocolMeta = {
+                            requestId: safeEvent.requestId,
+                            provider: safeEvent.provider,
+                            fallbackUsed: safeEvent.fallbackUsed,
+                            endState: safeEvent.endState,
+                            ttft: safeEvent.ttft ?? streamProtocolMeta.ttft,
+                            streamEnabled: streamFlags.streamEnabled,
+                            fallbackEnabled: streamFlags.fallbackEnabled
+                        };
+                        if (safeEvent.delta) {
+                            aiContent += safeEvent.delta;
+                            streamDeltaCount += 1;
+                            streamingPreviewMessage.content = aiContent;
+                            schedulePreviewRender();
+                        }
+                        this.updateAiRequestLifecycle(streamRequestId, 'streaming', {
+                            provider: safeEvent.provider,
+                            fallbackUsed: safeEvent.fallbackUsed
+                        });
+                    },
+                    onDone: (event) => {
+                        if (!isCurrentRequest()) {
+                            return;
+                        }
+                        const safeEvent = streamEventGuard(event);
+                        streamProtocolMeta = {
+                            requestId: safeEvent.requestId,
+                            provider: safeEvent.provider,
+                            fallbackUsed: safeEvent.fallbackUsed,
+                            endState: safeEvent.endState,
+                            ttft: safeEvent.ttft ?? streamProtocolMeta.ttft,
+                            streamEnabled: streamFlags.streamEnabled,
+                            fallbackEnabled: streamFlags.fallbackEnabled
+                        };
+                        aiContent = safeEvent.finalText || aiContent;
+                        streamingPreviewMessage.content = aiContent;
+                        flushPreviewRenderNow();
+                        this.updateAiRequestLifecycle(streamRequestId, 'completed', {
+                            provider: safeEvent.provider,
+                            fallbackUsed: safeEvent.fallbackUsed
+                        });
+                    },
+                    onError: (event) => {
+                        if (!isCurrentRequest()) {
+                            return;
+                        }
+                        const safeEvent = streamEventGuard(event);
+                        streamProtocolMeta = {
+                            requestId: safeEvent.requestId,
+                            provider: safeEvent.provider,
+                            fallbackUsed: safeEvent.fallbackUsed,
+                            endState: safeEvent.endState,
+                            ttft: safeEvent.ttft ?? streamProtocolMeta.ttft,
+                            streamEnabled: streamFlags.streamEnabled,
+                            fallbackEnabled: streamFlags.fallbackEnabled
+                        };
+                        this.updateAiRequestLifecycle(streamRequestId, 'errored', {
+                            provider: safeEvent.provider,
+                            fallbackUsed: safeEvent.fallbackUsed
+                        });
+                        throw new Error(safeEvent.errorMessage || '流式协议错误');
+                    },
+                    onAbort: (event) => {
+                        if (!isCurrentRequest()) {
+                            return;
+                        }
+                        const safeEvent = streamEventGuard(event);
+                        streamProtocolMeta = {
+                            requestId: safeEvent.requestId,
+                            provider: safeEvent.provider,
+                            fallbackUsed: safeEvent.fallbackUsed,
+                            endState: safeEvent.endState
+                        };
+                        this.updateAiRequestLifecycle(streamRequestId, 'aborted', {
+                            provider: safeEvent.provider,
+                            fallbackUsed: safeEvent.fallbackUsed
+                        });
+                    }
+                });
 
-                const data = await response.json();
-                const aiContent = getGeminiResponseText(data);
+                if (!isCurrentRequest()) {
+                    return;
+                }
 
                 if (!aiContent) throw new Error('AI返回了空内容');
+                if (streamProtocolMeta.endState !== 'completed') {
+                    throw new Error(`AI流式协议未完成: ${streamProtocolMeta.endState}`);
+                }
+                this.updateAiRequestLifecycle(streamRequestId, 'completed', {
+                    provider: streamProtocolMeta.provider,
+                    fallbackUsed: streamProtocolMeta.fallbackUsed
+                });
+
+                cleanupStreamingPreview();
 
                 // 解析AI回复，提取文本消息
                 const replyTexts = this.parseAiCharacterResponse(aiContent);
@@ -2069,13 +2484,60 @@ class OnlineChatManager {
                 }
 
                 this.saveChats();
+                streamStorageWriteCount += 1;
+                if (typeof window.pushTask11Evidence === 'function') {
+                    window.pushTask11Evidence('onlineChat', {
+                        source: 'runtime',
+                        requestId: streamRequestId,
+                        endState: streamProtocolMeta.endState,
+                        deltaCount: streamDeltaCount,
+                        renderFlushCount: streamRenderFlushCount,
+                        storageWrites: streamStorageWriteCount,
+                        tokenToWriteRatio: streamStorageWriteCount > 0 ? (streamDeltaCount / streamStorageWriteCount) : null,
+                        parseCompatible: true
+                    });
+                }
                 this.renderChatList();
+                console.info('[online AI request end]', {
+                    requestId: streamProtocolMeta.requestId,
+                    provider: streamProtocolMeta.provider,
+                    streamEnabled: streamProtocolMeta.streamEnabled,
+                    fallbackEnabled: streamProtocolMeta.fallbackEnabled,
+                    fallbackUsed: streamProtocolMeta.fallbackUsed,
+                    endState: streamProtocolMeta.endState,
+                    ttft: streamProtocolMeta.ttft ?? null
+                });
 
             } catch (error) {
+                cleanupStreamingPreview();
+                if (typeof window.pushTask11Evidence === 'function') {
+                    window.pushTask11Evidence('onlineChat', {
+                        source: 'runtime',
+                        requestId: this.aiRequestLifecycle.requestId,
+                        endState: error && error.name === 'AbortError' ? 'aborted' : 'errored'
+                    });
+                }
+                if (error && error.name === 'AbortError') {
+                    const activeRequestId = this.aiRequestLifecycle.requestId;
+                    if (activeRequestId) {
+                        this.updateAiRequestLifecycle(activeRequestId, 'aborted');
+                    }
+                    return;
+                }
                 console.error('AI角色回复失败:', error);
+                const activeRequestId = this.aiRequestLifecycle.requestId;
+                if (activeRequestId) {
+                    this.updateAiRequestLifecycle(activeRequestId, 'errored');
+                }
                 alert('AI角色回复失败: ' + error.message);
             } finally {
-                this.isAiResponding = false;
+                const activeRequestId = this.aiRequestLifecycle.requestId;
+                if (activeRequestId) {
+                    const activeEndState = this.aiRequestLifecycle.endState;
+                    if (activeEndState !== 'completed' && activeEndState !== 'errored' && activeEndState !== 'aborted') {
+                        this.updateAiRequestLifecycle(activeRequestId, 'errored');
+                    }
+                }
                 if (btn) { btn.disabled = false; btn.textContent = '调用AI'; }
             }
         }

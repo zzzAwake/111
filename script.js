@@ -178,6 +178,117 @@ console.log(`EPhone 设备ID: ${EPHONE_DEVICE_ID}`);
 
 // 全局 API 调用控制器
 let currentApiController = null;
+let mainChatRequestLifecycle = {
+  requestId: null,
+  controller: null,
+  endState: 'idle',
+  retryCount: 0,
+  fallbackUsed: false,
+  provider: null,
+  updatedAt: 0
+};
+
+function beginMainChatRequestLifecycle(requestId, controller, metadata = {}) {
+  mainChatRequestLifecycle = {
+    ...mainChatRequestLifecycle,
+    requestId,
+    controller,
+    endState: 'pending',
+    retryCount: 0,
+    fallbackUsed: false,
+    provider: metadata.provider || null,
+    updatedAt: Date.now()
+  };
+  currentApiController = controller;
+  return mainChatRequestLifecycle;
+}
+
+function isMainChatRequestCurrent(requestId) {
+  return Boolean(requestId) && mainChatRequestLifecycle.requestId === requestId;
+}
+
+function updateMainChatRequestLifecycle(requestId, nextState, metadata = {}) {
+  if (!isMainChatRequestCurrent(requestId)) {
+    return false;
+  }
+
+  mainChatRequestLifecycle = {
+    ...mainChatRequestLifecycle,
+    endState: nextState,
+    ...metadata,
+    updatedAt: Date.now()
+  };
+
+  if (nextState === 'completed' || nextState === 'errored' || nextState === 'aborted') {
+    if (currentApiController === mainChatRequestLifecycle.controller) {
+      currentApiController = null;
+    }
+    mainChatRequestLifecycle = {
+      ...mainChatRequestLifecycle,
+      controller: null,
+      updatedAt: Date.now()
+    };
+  }
+
+  return true;
+}
+
+function createFeatureRequestLifecycle() {
+  return {
+    requestId: null,
+    controller: null,
+    endState: 'idle',
+    fallbackUsed: false,
+    provider: null,
+    entry: null,
+    updatedAt: 0
+  };
+}
+
+function beginFeatureRequestLifecycle(lifecycle, requestId, controller, metadata = {}) {
+  if (!lifecycle) return;
+  lifecycle.requestId = requestId;
+  lifecycle.controller = controller;
+  lifecycle.endState = 'pending';
+  lifecycle.fallbackUsed = false;
+  lifecycle.provider = metadata.provider || null;
+  lifecycle.entry = metadata.entry || null;
+  lifecycle.updatedAt = Date.now();
+}
+
+function isFeatureRequestCurrent(lifecycle, requestId) {
+  return Boolean(lifecycle && requestId) && lifecycle.requestId === requestId;
+}
+
+function updateFeatureRequestLifecycle(lifecycle, requestId, nextState, metadata = {}) {
+  if (!isFeatureRequestCurrent(lifecycle, requestId)) {
+    return false;
+  }
+
+  lifecycle.endState = nextState;
+  Object.assign(lifecycle, metadata);
+  lifecycle.updatedAt = Date.now();
+
+  if (nextState === 'completed' || nextState === 'errored' || nextState === 'aborted') {
+    lifecycle.controller = null;
+    lifecycle.updatedAt = Date.now();
+  }
+
+  return true;
+}
+
+function abortFeatureRequestIfRunning(lifecycle) {
+  if (!lifecycle || !lifecycle.controller || !lifecycle.requestId) {
+    return;
+  }
+
+  const previousRequestId = lifecycle.requestId;
+  try {
+    lifecycle.controller.abort();
+  } catch (abortError) {
+  }
+  updateFeatureRequestLifecycle(lifecycle, previousRequestId, 'aborted');
+}
 
 let isPinActivated = localStorage.getItem('ephonePinActivated') === 'true';
 
@@ -655,6 +766,104 @@ function setLanguage(lang) {
   });
 }
 
+const RELOAD_ONCE_SESSION_KEY = 'eawake-reload-once';
+
+async function requestReload(options = {}) {
+  const {
+    reason = 'unknown',
+    needConfirm = false,
+    delayMs = 0,
+    forceReload = false,
+    confirmMessage = '页面需要刷新以应用更改，是否立即刷新？',
+    confirmTitle = '刷新页面？',
+    confirmHandler = null
+  } = options;
+
+  console.log('[刷新闸门] 收到刷新请求:', {
+    reason,
+    needConfirm,
+    delayMs,
+    forceReload
+  });
+
+  if (needConfirm) {
+    let confirmed = false;
+    try {
+      if (typeof confirmHandler === 'function') {
+        confirmed = await Promise.resolve(confirmHandler({ reason, confirmTitle, confirmMessage }));
+      } else {
+        confirmed = window.confirm(confirmMessage);
+      }
+    } catch (error) {
+      console.error('[刷新闸门] 刷新确认失败，已取消刷新:', { reason, error });
+      return false;
+    }
+
+    if (!confirmed) {
+      console.log('[刷新闸门] 用户取消刷新:', { reason });
+      return false;
+    }
+  }
+
+  try {
+    const existingLockReason = sessionStorage.getItem(RELOAD_ONCE_SESSION_KEY);
+    if (existingLockReason) {
+      console.warn('[刷新闸门] 同一会话已执行过刷新，跳过本次请求:', {
+        reason,
+        previousReason: existingLockReason
+      });
+      return false;
+    }
+
+    sessionStorage.setItem(RELOAD_ONCE_SESSION_KEY, `${Date.now()}|${reason}`);
+  } catch (error) {
+    console.warn('[刷新闸门] sessionStorage 不可用，无法写入会话锁，将继续执行刷新:', error);
+  }
+
+  const normalizedDelay = Number.isFinite(delayMs) ? Math.max(0, delayMs) : 0;
+  if (normalizedDelay > 0) {
+    await new Promise(resolve => setTimeout(resolve, normalizedDelay));
+  }
+
+  console.warn('[刷新闸门] 开始执行页面刷新:', {
+    reason,
+    delayMs: normalizedDelay,
+    forceReload
+  });
+
+  window.location.reload(Boolean(forceReload));
+  return true;
+}
+
+window.requestReload = requestReload;
+
+async function promptReloadChoice({
+  reason,
+  alertTitle = '操作已完成',
+  alertMessage,
+  confirmTitle = '是否立即刷新？',
+  confirmMessage = '页面不会自动刷新，点击“立即刷新”即可应用更改，或稍后手动刷新。',
+  confirmText = '立即刷新',
+  cancelText = '稍后刷新',
+  confirmButtonClass = 'btn-primary',
+  requestOptions = {}
+} = {}) {
+  if (!alertMessage) return;
+  await showCustomAlert(alertTitle, alertMessage);
+  const confirmFn =
+    typeof showCustomConfirm === 'function'
+      ? showCustomConfirm
+      : async (title, message) => window.confirm(`${title}\n\n${message}`);
+  const shouldReload = await confirmFn(confirmTitle, confirmMessage, {
+    confirmText,
+    cancelText,
+    confirmButtonClass
+  });
+  if (shouldReload) {
+    await requestReload({ reason, ...requestOptions });
+  }
+}
+
 function initLanguage() {
   const savedLang = localStorage.getItem('ephone-language') || 'zh-CN';
   const langSelector = document.getElementById('language-select');
@@ -663,9 +872,17 @@ function initLanguage() {
     langSelector.value = savedLang;
     langSelector.addEventListener('change', (e) => {
       const newLang = e.target.value;
-      alert(translations[newLang].languageChangedAlert);
-      localStorage.setItem('ephone-language', newLang);
-      setTimeout(() => window.location.reload(), 100);
+      const languageAlert = translations[newLang]?.languageChangedAlert || translations['zh-CN'].languageChangedAlert;
+      setLanguage(newLang);
+      promptReloadChoice({
+        reason: 'language-switch',
+        alertTitle: '语言已切换',
+        alertMessage: `${languageAlert}\n\n语言切换后不会自动刷新页面。点击“立即刷新”即可立即应用新语言，或稍后手动刷新。`,
+        confirmTitle: '是否立即刷新？',
+        confirmMessage: '页面不会自动刷新，点击“立即刷新”即可马上应用语言更改，或稍后手动刷新。',
+        confirmText: '立即刷新',
+        cancelText: '稍后刷新'
+      });
     });
   }
   setLanguage(savedLang);
@@ -915,6 +1132,7 @@ let lastGroupMessagesSent = [];
 let currentQzoneReplyContext = null;
 let editingNpcId = null;
 let pendingBackupData = null;
+let pendingImportSampleHint = 'unknown';
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models'
 function findBestStickerMatch(meaning, availableStickers) {
   if (!meaning || !availableStickers || availableStickers.length === 0) {
@@ -1050,15 +1268,832 @@ function getGeminiResponseText(data) {
   throw new Error(errorReason);
 }
 
+function createStreamRequestId(prefix = 'stream') {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getStreamRolloutFlags(customFlags = {}) {
+  const globalSettings = (window.state && window.state.globalSettings) ? window.state.globalSettings : {};
+  const streamEnabled = typeof customFlags.streamEnabled === 'boolean'
+    ? customFlags.streamEnabled
+    : (typeof globalSettings.streamEnabled === 'boolean' ? globalSettings.streamEnabled : false);
+  const fallbackEnabled = typeof customFlags.fallbackEnabled === 'boolean'
+    ? customFlags.fallbackEnabled
+    : (typeof globalSettings.fallbackEnabled === 'boolean' ? globalSettings.fallbackEnabled : true);
+
+  return {
+    streamEnabled,
+    fallbackEnabled
+  };
+}
+
+function createStreamEventGuard(expectedRequestId) {
+  return function validateStreamEvent(event) {
+    if (!event || typeof event !== 'object') {
+      throw new Error('[streamChat] 协议错误: 事件对象无效');
+    }
+    if (!event.requestId) {
+      throw new Error('[streamChat] 协议错误: 事件缺少 requestId，已拒绝写入');
+    }
+    if (event.requestId !== expectedRequestId) {
+      throw new Error(`[streamChat] 协议错误: requestId 不匹配，期望 ${expectedRequestId}，收到 ${event.requestId}，已拒绝写入`);
+    }
+    return event;
+  };
+}
+
+async function streamChat(options = {}) {
+  const {
+    proxyUrl,
+    apiKey,
+    model,
+    systemPrompt,
+    messagesPayload,
+    isGemini,
+    geminiConfig,
+    signal,
+    requestId,
+    streamEnabled,
+    fallbackEnabled,
+    onStart,
+    onDelta,
+    onDone,
+    onError,
+    onAbort
+  } = options;
+
+  const finalRequestId = requestId || createStreamRequestId('chat');
+  const provider = isGemini ? 'gemini' : 'openai-compatible';
+  const startTimestamp = Date.now();
+  let firstTokenTimestamp = null;
+  const markFirstTokenTimestamp = () => {
+    if (firstTokenTimestamp === null) {
+      firstTokenTimestamp = Date.now();
+    }
+  };
+  const getTtft = () => {
+    if (firstTokenTimestamp === null) return null;
+    return Math.max(firstTokenTimestamp - startTimestamp, 0);
+  };
+  const flags = getStreamRolloutFlags({ streamEnabled, fallbackEnabled });
+  const guardEvent = createStreamEventGuard(finalRequestId);
+  let currentFallbackUsed = false;
+  let streamDeltaEmitted = false;
+
+  const emit = (type, payload = {}) => {
+    const event = {
+      type,
+      requestId: payload.requestId || finalRequestId,
+      provider,
+      fallbackUsed: currentFallbackUsed,
+      endState: payload.endState || 'pending',
+      ...payload
+    };
+    event.ttft = getTtft();
+
+    const validEvent = guardEvent(event);
+    const handlerMap = {
+      start: onStart,
+      delta: onDelta,
+      done: onDone,
+      error: onError,
+      abort: onAbort
+    };
+    const handler = handlerMap[type];
+    if (type === 'delta') {
+      markFirstTokenTimestamp();
+      streamDeltaEmitted = true;
+    }
+    if (type === 'done' && !streamDeltaEmitted) {
+      markFirstTokenTimestamp();
+    }
+    if (typeof handler === 'function') {
+      handler(validEvent);
+    }
+    return validEvent;
+  };
+
+  const toErrorMessage = async (response) => {
+    let errorMsg = `API 返回错误: ${response.status} ${response.statusText}`;
+    try {
+      const errorData = await response.json();
+      if (errorData.error && errorData.error.message) {
+        errorMsg += ` - ${errorData.error.message}`;
+      } else {
+        errorMsg += ` - ${JSON.stringify(errorData)}`;
+      }
+    } catch (jsonError) {
+      errorMsg += ` - 响应内容: ${await response.text()}`;
+    }
+    return errorMsg;
+  };
+
+  const fetchNonStream = async () => {
+    const response = isGemini
+      ? await fetch(geminiConfig.url, {
+        ...geminiConfig.data,
+        signal
+      })
+      : await fetch(`${proxyUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: [{
+            role: 'system',
+            content: systemPrompt
+          }, ...messagesPayload],
+          temperature: (window.state && window.state.globalSettings && window.state.globalSettings.apiTemperature) || 0.8,
+          stream: false
+        }),
+        signal
+      });
+
+    if (!response.ok) {
+      throw new Error(await toErrorMessage(response));
+    }
+
+    const data = await response.json();
+    const finalText = getGeminiResponseText(data);
+    return {
+      data,
+      finalText,
+      responseStatus: response.status,
+      responseStatusText: response.statusText
+    };
+  };
+
+  const toGeminiStreamUrl = (baseUrl) => {
+    if (!baseUrl || typeof baseUrl !== 'string') {
+      throw new Error('[streamChat] Gemini stream URL 无效');
+    }
+
+    if (baseUrl.includes(':streamGenerateContent')) {
+      return baseUrl.includes('alt=sse') ? baseUrl : `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}alt=sse`;
+    }
+
+    if (baseUrl.includes(':generateContent?')) {
+      return baseUrl.replace(':generateContent?', ':streamGenerateContent?alt=sse&');
+    }
+
+    if (baseUrl.endsWith(':generateContent')) {
+      return `${baseUrl.replace(':generateContent', ':streamGenerateContent')}?alt=sse`;
+    }
+
+    return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}alt=sse`;
+  };
+
+  const fetchOpenAiStream = async () => {
+    const response = await fetch(`${proxyUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: model,
+        messages: [{
+          role: 'system',
+          content: systemPrompt
+        }, ...messagesPayload],
+        temperature: (window.state && window.state.globalSettings && window.state.globalSettings.apiTemperature) || 0.8,
+        stream: true
+      }),
+      signal
+    });
+
+    if (!response.ok) {
+      throw new Error(await toErrorMessage(response));
+    }
+
+    if (!response.body) {
+      throw new Error('[streamChat] 服务器未返回可读流 response.body');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let finalText = '';
+    let doneReceived = false;
+
+    const processBufferedLines = () => {
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || '';
+
+      for (const rawLine of lines) {
+        if (doneReceived) {
+          break;
+        }
+
+        const line = rawLine.trim();
+        if (!line || !line.startsWith('data:')) {
+          continue;
+        }
+
+        const payload = line.slice(5).trim();
+        if (!payload) {
+          continue;
+        }
+
+        if (payload === '[DONE]') {
+          doneReceived = true;
+          break;
+        }
+
+        try {
+          const parsed = JSON.parse(payload);
+          const delta = parsed && parsed.choices && parsed.choices[0] && parsed.choices[0].delta
+            ? parsed.choices[0].delta.content
+            : '';
+          if (delta && !doneReceived) {
+            finalText += delta;
+            emit('delta', {
+              endState: 'streaming',
+              delta
+            });
+          }
+        } catch (e) {
+        }
+      }
+    };
+
+    try {
+      while (!doneReceived) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        processBufferedLines();
+      }
+
+      if (!doneReceived) {
+        buffer += decoder.decode();
+        processBufferedLines();
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch (releaseError) {
+      }
+    }
+
+    if (!finalText) {
+      throw new Error('[streamChat] 流式返回为空');
+    }
+
+    return {
+      data: null,
+      finalText,
+      responseStatus: response.status,
+      responseStatusText: response.statusText
+    };
+  };
+
+  const fetchGeminiStream = async () => {
+    const streamUrl = toGeminiStreamUrl(geminiConfig && geminiConfig.url);
+    const response = await fetch(streamUrl, {
+      ...(geminiConfig ? geminiConfig.data : {}),
+      signal
+    });
+
+    if (!response.ok) {
+      throw new Error(await toErrorMessage(response));
+    }
+
+    if (!response.body) {
+      throw new Error('[streamChat] Gemini 流式返回缺少 response.body');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let finalText = '';
+    let doneReceived = false;
+
+    const processBufferedLines = () => {
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || '';
+
+      for (const rawLine of lines) {
+        if (doneReceived) {
+          break;
+        }
+
+        const line = rawLine.trim();
+        if (!line || !line.startsWith('data:')) {
+          continue;
+        }
+
+        const payload = line.slice(5).trim();
+        if (!payload) {
+          continue;
+        }
+
+        if (payload === '[DONE]') {
+          doneReceived = true;
+          break;
+        }
+
+        try {
+          const parsed = JSON.parse(payload);
+          const chunkText = getGeminiResponseText(parsed);
+          let delta = '';
+
+          if (chunkText) {
+            if (chunkText.startsWith(finalText)) {
+              delta = chunkText.slice(finalText.length);
+              finalText = chunkText;
+            } else {
+              delta = chunkText;
+              finalText += chunkText;
+            }
+          }
+
+          if (delta) {
+            emit('delta', {
+              endState: 'streaming',
+              delta
+            });
+          }
+
+          const finishReason = parsed
+            && parsed.candidates
+            && parsed.candidates[0]
+            && parsed.candidates[0].finishReason;
+          if (finishReason) {
+            doneReceived = true;
+            break;
+          }
+        } catch (e) {
+        }
+      }
+    };
+
+    try {
+      while (!doneReceived) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        processBufferedLines();
+      }
+
+      if (!doneReceived) {
+        buffer += decoder.decode();
+        processBufferedLines();
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch (releaseError) {
+      }
+    }
+
+    if (!finalText) {
+      throw new Error('[streamChat] Gemini 流式返回为空');
+    }
+
+    return {
+      data: null,
+      finalText,
+      responseStatus: response.status,
+      responseStatusText: response.statusText
+    };
+  };
+
+  emit('start', {
+    endState: 'pending'
+  });
+
+  try {
+    const flags = getStreamRolloutFlags({ streamEnabled, fallbackEnabled });
+    let result = null;
+
+    if (flags.streamEnabled) {
+      if (isGemini) {
+        try {
+          result = await fetchGeminiStream();
+        } catch (streamError) {
+          if (streamError && streamError.name === 'AbortError') {
+            throw streamError;
+          }
+          if (!flags.fallbackEnabled || streamDeltaEmitted) {
+            throw streamError;
+          }
+          currentFallbackUsed = true;
+          result = await fetchNonStream();
+        }
+      } else {
+        try {
+          result = await fetchOpenAiStream();
+        } catch (streamError) {
+          if (streamError && streamError.name === 'AbortError') {
+            throw streamError;
+          }
+          if (!flags.fallbackEnabled || streamDeltaEmitted) {
+            throw streamError;
+          }
+          currentFallbackUsed = true;
+          result = await fetchNonStream();
+        }
+      }
+    } else {
+      result = await fetchNonStream();
+    }
+
+    emit('done', {
+      endState: 'completed',
+      finalText: result.finalText
+    });
+
+    const finalTtft = getTtft();
+    return {
+      requestId: finalRequestId,
+      provider,
+      fallbackUsed: currentFallbackUsed,
+      endState: 'completed',
+      finalText: result.finalText,
+      data: result.data,
+      responseStatus: result.responseStatus,
+      responseStatusText: result.responseStatusText
+      ,
+      streamEnabled: flags.streamEnabled,
+      fallbackEnabled: flags.fallbackEnabled,
+      ttft: finalTtft
+    };
+  } catch (error) {
+    if (error && error.name === 'AbortError') {
+      emit('abort', {
+        endState: 'aborted'
+      });
+      throw error;
+    }
+
+    emit('error', {
+      endState: 'errored',
+      errorType: (error && error.name) ? error.name : 'StreamChatError',
+      errorMessage: (error && error.message) ? error.message : '未知错误'
+    });
+    throw error;
+  }
+}
+
+window.streamChat = streamChat;
+window.createStreamRequestId = createStreamRequestId;
+window.createStreamEventGuard = createStreamEventGuard;
+window.getStreamRolloutFlags = getStreamRolloutFlags;
+
+function ensureTask10EvidenceStore() {
+  if (!window.__task10Evidence || typeof window.__task10Evidence !== 'object') {
+    window.__task10Evidence = {
+      drawGuess: [],
+      werewolf: []
+    };
+  }
+  if (!Array.isArray(window.__task10Evidence.drawGuess)) {
+    window.__task10Evidence.drawGuess = [];
+  }
+  if (!Array.isArray(window.__task10Evidence.werewolf)) {
+    window.__task10Evidence.werewolf = [];
+  }
+  return window.__task10Evidence;
+}
+
+function pushTask10Evidence(channel, payload = {}) {
+  const store = ensureTask10EvidenceStore();
+  if (!store[channel] || !Array.isArray(store[channel])) {
+    store[channel] = [];
+  }
+  store[channel].push({
+    timestamp: Date.now(),
+    ...payload
+  });
+}
+
+function ensureTask11EvidenceStore() {
+  if (!window.__task11Evidence || typeof window.__task11Evidence !== 'object') {
+    window.__task11Evidence = {
+      mainChat: [],
+      onlineChat: []
+    };
+  }
+  if (!Array.isArray(window.__task11Evidence.mainChat)) {
+    window.__task11Evidence.mainChat = [];
+  }
+  if (!Array.isArray(window.__task11Evidence.onlineChat)) {
+    window.__task11Evidence.onlineChat = [];
+  }
+  return window.__task11Evidence;
+}
+
+function pushTask11Evidence(channel, payload = {}) {
+  const store = ensureTask11EvidenceStore();
+  if (!store[channel] || !Array.isArray(store[channel])) {
+    store[channel] = [];
+  }
+  store[channel].push({
+    timestamp: Date.now(),
+    ...payload
+  });
+}
+  window.pushTask11Evidence = pushTask11Evidence;
+
+async function runFeatureTextStreamRequest(options = {}) {
+  const {
+    lifecycle,
+    entry = 'feature-text',
+    proxyUrl,
+    apiKey,
+    model,
+    systemPrompt,
+    messagesPayload,
+    isGemini,
+    geminiConfig,
+    streamEnabled,
+    fallbackEnabled,
+    onDeltaText
+  } = options;
+
+  if (!lifecycle) {
+    throw new Error('请求生命周期对象缺失');
+  }
+
+  abortFeatureRequestIfRunning(lifecycle);
+
+  const streamRequestId = createStreamRequestId(entry);
+  const requestController = new AbortController();
+  const provider = isGemini ? 'gemini' : 'openai-compatible';
+  beginFeatureRequestLifecycle(lifecycle, streamRequestId, requestController, {
+    provider,
+    entry
+  });
+
+  const isCurrentRequest = () => isFeatureRequestCurrent(lifecycle, streamRequestId);
+  const streamEventGuard = createStreamEventGuard(streamRequestId);
+  const streamFlags = getStreamRolloutFlags({ streamEnabled, fallbackEnabled });
+  let streamProtocolMeta = {
+    requestId: streamRequestId,
+    provider,
+    fallbackUsed: false,
+    endState: 'pending'
+  };
+  let aiResponseContent = '';
+
+  try {
+    const streamResult = await streamChat({
+      proxyUrl,
+      apiKey,
+      model,
+      systemPrompt,
+      messagesPayload,
+      isGemini,
+      geminiConfig,
+      signal: requestController.signal,
+      requestId: streamRequestId,
+      streamEnabled: streamFlags.streamEnabled,
+      fallbackEnabled: streamFlags.fallbackEnabled,
+      onStart: (event) => {
+        if (!isCurrentRequest()) return;
+        const safeEvent = streamEventGuard(event);
+        streamProtocolMeta = {
+          requestId: safeEvent.requestId,
+          provider: safeEvent.provider,
+          fallbackUsed: safeEvent.fallbackUsed,
+          endState: safeEvent.endState
+        };
+        updateFeatureRequestLifecycle(lifecycle, streamRequestId, safeEvent.endState, {
+          provider: safeEvent.provider,
+          fallbackUsed: safeEvent.fallbackUsed,
+          entry
+        });
+      },
+      onDelta: (event) => {
+        if (!isCurrentRequest()) return;
+        const safeEvent = streamEventGuard(event);
+        if (safeEvent.delta) {
+          aiResponseContent += safeEvent.delta;
+          if (typeof onDeltaText === 'function') {
+            onDeltaText(safeEvent.delta, aiResponseContent, safeEvent);
+          }
+        }
+        streamProtocolMeta = {
+          requestId: safeEvent.requestId,
+          provider: safeEvent.provider,
+          fallbackUsed: safeEvent.fallbackUsed,
+          endState: safeEvent.endState
+        };
+        updateFeatureRequestLifecycle(lifecycle, streamRequestId, 'streaming', {
+          provider: safeEvent.provider,
+          fallbackUsed: safeEvent.fallbackUsed,
+          entry
+        });
+      },
+      onDone: (event) => {
+        if (!isCurrentRequest()) return;
+        const safeEvent = streamEventGuard(event);
+        streamProtocolMeta = {
+          requestId: safeEvent.requestId,
+          provider: safeEvent.provider,
+          fallbackUsed: safeEvent.fallbackUsed,
+          endState: safeEvent.endState
+        };
+        aiResponseContent = safeEvent.finalText || aiResponseContent;
+        updateFeatureRequestLifecycle(lifecycle, streamRequestId, 'completed', {
+          provider: safeEvent.provider,
+          fallbackUsed: safeEvent.fallbackUsed,
+          entry
+        });
+      },
+      onError: (event) => {
+        if (!isCurrentRequest()) return;
+        const safeEvent = streamEventGuard(event);
+        streamProtocolMeta = {
+          requestId: safeEvent.requestId,
+          provider: safeEvent.provider,
+          fallbackUsed: safeEvent.fallbackUsed,
+          endState: safeEvent.endState
+        };
+        updateFeatureRequestLifecycle(lifecycle, streamRequestId, 'errored', {
+          provider: safeEvent.provider,
+          fallbackUsed: safeEvent.fallbackUsed,
+          entry
+        });
+      },
+      onAbort: (event) => {
+        if (!isCurrentRequest()) return;
+        const safeEvent = streamEventGuard(event);
+        streamProtocolMeta = {
+          requestId: safeEvent.requestId,
+          provider: safeEvent.provider,
+          fallbackUsed: safeEvent.fallbackUsed,
+          endState: safeEvent.endState
+        };
+        updateFeatureRequestLifecycle(lifecycle, streamRequestId, 'aborted', {
+          provider: safeEvent.provider,
+          fallbackUsed: safeEvent.fallbackUsed,
+          entry
+        });
+      }
+    });
+
+    if (!isCurrentRequest()) {
+      return {
+        ignored: true,
+        requestId: streamRequestId,
+        endState: streamProtocolMeta.endState,
+        fallbackUsed: streamProtocolMeta.fallbackUsed,
+        provider: streamProtocolMeta.provider,
+        streamEnabled: streamFlags.streamEnabled,
+        fallbackEnabled: streamFlags.fallbackEnabled,
+        finalText: ''
+      };
+    }
+
+    if (!aiResponseContent && streamResult && typeof streamResult.finalText === 'string') {
+      aiResponseContent = streamResult.finalText;
+    }
+
+    if (!streamResult) {
+      throw new Error('[streamChat] 未返回有效结果');
+    }
+
+    updateFeatureRequestLifecycle(lifecycle, streamRequestId, 'completed', {
+      provider: streamProtocolMeta.provider,
+      fallbackUsed: streamProtocolMeta.fallbackUsed,
+      entry
+    });
+
+    return {
+      ignored: false,
+      requestId: streamResult.requestId,
+      endState: streamProtocolMeta.endState,
+      fallbackUsed: streamProtocolMeta.fallbackUsed,
+      provider: streamProtocolMeta.provider,
+      streamEnabled: streamFlags.streamEnabled,
+      fallbackEnabled: streamFlags.fallbackEnabled,
+      finalText: aiResponseContent,
+      data: streamResult.data,
+      ttft: streamResult.ttft
+    };
+  } catch (error) {
+    if (error && error.name === 'AbortError') {
+      updateFeatureRequestLifecycle(lifecycle, streamRequestId, 'aborted', {
+        provider: streamProtocolMeta.provider,
+        fallbackUsed: streamProtocolMeta.fallbackUsed,
+        entry
+      });
+      throw error;
+    }
+
+    if (isCurrentRequest()) {
+      updateFeatureRequestLifecycle(lifecycle, streamRequestId, 'errored', {
+        provider: streamProtocolMeta.provider,
+        fallbackUsed: streamProtocolMeta.fallbackUsed,
+        entry
+      });
+    }
+    throw error;
+  }
+}
+
 
 document.addEventListener('DOMContentLoaded', () => {
+  const DB_READY_WAIT_TIMEOUT_MS = 4000;
+
+  async function awaitDbReadyWithTimeout(timeoutMs = DB_READY_WAIT_TIMEOUT_MS) {
+    const startedAt = Date.now();
+    const status = {
+      timeoutMs,
+      startedAt,
+      finishedAt: null,
+      elapsedMs: null,
+      outcome: 'pending',
+      fallbackUsed: false,
+      dbReadyAtResolve: false,
+      error: null
+    };
+    window.dbStartupStatus = status;
+
+    if (!window.dbReadyPromise || typeof window.dbReadyPromise.then !== 'function') {
+      status.finishedAt = Date.now();
+      status.elapsedMs = status.finishedAt - startedAt;
+      status.outcome = 'missing_db_ready_promise';
+      status.fallbackUsed = true;
+      status.dbReadyAtResolve = !!window.dbReady;
+      console.warn('[启动链路][DB等待降级] window.dbReadyPromise 不可用，跳过等待并继续渲染', {
+        timeoutMs,
+        elapsedMs: status.elapsedMs,
+        dbReady: !!window.dbReady
+      });
+      return status;
+    }
+
+    let timeoutId = null;
+    const timeoutPromise = new Promise(resolve => {
+      timeoutId = setTimeout(() => resolve({ type: 'timeout' }), timeoutMs);
+    });
+
+    let raceResult;
+    try {
+      raceResult = await Promise.race([
+        Promise.resolve(window.dbReadyPromise)
+          .then(() => ({ type: 'ready' }))
+          .catch(error => ({ type: 'error', error })),
+        timeoutPromise
+      ]);
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    }
+
+    status.finishedAt = Date.now();
+    status.elapsedMs = status.finishedAt - startedAt;
+    status.dbReadyAtResolve = !!window.dbReady;
+
+    if (raceResult.type === 'ready') {
+      status.outcome = 'ready';
+      console.log('[启动链路][DB等待] 数据库已就绪，按原流程继续', {
+        timeoutMs,
+        elapsedMs: status.elapsedMs,
+        dbReady: !!window.dbReady
+      });
+      return status;
+    }
+
+    status.fallbackUsed = true;
+
+    if (raceResult.type === 'timeout') {
+      status.outcome = 'timeout_fallback';
+      console.warn('[启动链路][DB等待降级] 等待数据库超时，继续渲染以避免启动阻塞', {
+        timeoutMs,
+        elapsedMs: status.elapsedMs,
+        dbReady: !!window.dbReady
+      });
+      return status;
+    }
+
+    status.outcome = 'error_fallback';
+    status.error = raceResult.error ? (raceResult.error.message || String(raceResult.error)) : 'unknown_error';
+    console.error('[启动链路][DB等待降级] 数据库等待异常，继续渲染以避免启动阻塞', {
+      timeoutMs,
+      elapsedMs: status.elapsedMs,
+      dbReady: !!window.dbReady,
+      error: raceResult.error
+    });
+    return status;
+  }
 
   // ========================================
   // 🛡️ 崩溃恢复检测 - 应用启动时执行
   // ========================================
   (async () => {
-    // 等待数据库就绪
-    await window.dbReadyPromise;
+    await awaitDbReadyWithTimeout();
     
     // 检测是否有异常退出
     const hadCrash = CrashRecoveryDetector.markSessionStart();
@@ -1179,9 +2214,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const stopApiCallBtn = document.getElementById('stop-api-call-btn');
   if (stopApiCallBtn) {
     stopApiCallBtn.addEventListener('click', () => {
-      if (currentApiController) {
+      const activeRequestId = mainChatRequestLifecycle.requestId;
+      const activeController = mainChatRequestLifecycle.controller || currentApiController;
+      if (activeController) {
         console.log('用户点击暂停调用按钮，正在取消API请求...');
-        currentApiController.abort();
+        activeController.abort();
+        if (activeRequestId) {
+          updateMainChatRequestLifecycle(activeRequestId, 'aborted');
+        }
 
         // 立即隐藏按钮并移除动画
         stopApiCallBtn.style.display = 'none';
@@ -1323,18 +2363,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
   }
-  document.addEventListener('visibilitychange', () => {
-
-    if (document.visibilityState === 'visible') {
-      console.log('应用已返回前台，正在检查更新...');
-
-      navigator.serviceWorker.ready.then(registration => {
-
-        registration.update();
-      });
-    }
-  });
-
   function toGeminiRequestData(model, apiKey, systemInstruction, messagesForDecision) {
     const apiTemperature = state.globalSettings.apiTemperature || 0.8;
     const roleType = {
@@ -2905,6 +3933,8 @@ document.addEventListener('DOMContentLoaded', () => {
       selectedTimestamps: new Set()
     }
   };
+  const drawGuessRequestLifecycle = createFeatureRequestLifecycle();
+  const werewolfRequestLifecycle = createFeatureRequestLifecycle();
   let originalChatMessagesPaddingTop = null;
 
 
@@ -4280,23 +5310,8 @@ document.addEventListener('DOMContentLoaded', () => {
     watchTogetherPlaylist: '++id, name, timestamp'
   });
 
-  // 月经记录相关表
   db.version(53).stores({
-    periodRecords: '++id, startDate, endDate, flow, symptoms, mood, notes, painLevel, pmsSymptoms, productChanges, sleepQuality, exerciseDuration, createdAt',
-    periodSettings: '++id, characterId, enabled, avgCycleLength, avgPeriodLength',
-    periodNotificationSettings: '&id, enabled, upcomingDays, upcomingTime, recordTime, abnormalCycleMin, abnormalCycleMax, delayDays'
-  });
-
-  // 番茄钟相关表
-  db.version(54).stores({
-    focusSessions: '++id, companionId, startTime, endTime, duration, completed, stage',
-    focusStats: '&id, todayCount, totalCount, streakDays, lastFocusDate',
-    focusMessages: '++id, sessionId, companionId, stage, message, timestamp'
-  });
-
-  // 修复：为 shoppingProducts 补充 categoryId 索引
-  db.version(55).stores({
-    shoppingProducts: '++id, name, description, categoryId'
+    focusStats: '++id, timestamp, date, chatId'
   });
 
   window.db = db;
@@ -6003,10 +7018,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
       await showCustomAlert("操作成功", summary);
 
-      const confirmedReload = await showCustomConfirm("刷新页面？", "为了确保所有数据同步，建议立即刷新页面。");
-      if (confirmedReload) {
-        location.reload();
-      }
+      await requestReload({
+        reason: 'cleanup-redundant-data',
+        needConfirm: true,
+        confirmHandler: () => showCustomConfirm("刷新页面？", "为了确保所有数据同步，建议立即刷新页面。")
+      });
 
     } catch (error) {
       console.error("清理冗余数据时出错:", error);
@@ -6436,7 +7452,170 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
 
-  async function importStreamedBackup(backupData) {
+  const FULL_IMPORT_REQUIRED_TABLES = ['chats', 'worldBooks'];
+  const GITHUB_RESTORE_REQUIRED_TABLES = ['chats', 'worldBooks'];
+
+  function precheckFullImportCompatibility(backupData) {
+    const knownTablesToImport = [];
+    const skippedUnknownTables = [];
+    const blockingErrors = [];
+
+    if (!backupData || typeof backupData !== 'object') {
+      blockingErrors.push('备份数据格式无效');
+      return {
+        knownTablesToImport,
+        skippedUnknownTables,
+        blockingErrors
+      };
+    }
+
+    const knownTableNames = new Set(db.tables.map(table => table.name));
+
+    for (const requiredTable of FULL_IMPORT_REQUIRED_TABLES) {
+      if (!Array.isArray(backupData[requiredTable])) {
+        blockingErrors.push(`关键表缺失或格式错误: ${requiredTable}`);
+      }
+    }
+
+    for (const tableName in backupData) {
+      if (!Array.isArray(backupData[tableName])) continue;
+
+      if (knownTableNames.has(tableName)) {
+        knownTablesToImport.push(tableName);
+      } else {
+        skippedUnknownTables.push(tableName);
+      }
+    }
+
+    return {
+      knownTablesToImport,
+      skippedUnknownTables,
+      blockingErrors
+    };
+  }
+
+  function precheckGitHubRestoreCompatibility(mergedBackupData) {
+    const knownTablesToImport = [];
+    const skippedUnknownTables = [];
+    const blockingErrors = [];
+
+    if (!mergedBackupData || typeof mergedBackupData !== 'object') {
+      blockingErrors.push('备份数据格式无效');
+      return {
+        knownTablesToImport,
+        skippedUnknownTables,
+        blockingErrors
+      };
+    }
+
+    const knownTableNames = new Set(db.tables.map(table => table.name));
+
+    for (const requiredTable of GITHUB_RESTORE_REQUIRED_TABLES) {
+      if (!Array.isArray(mergedBackupData[requiredTable])) {
+        blockingErrors.push(`关键表缺失或格式错误: ${requiredTable}`);
+      }
+    }
+
+    for (const tableName in mergedBackupData) {
+      if (!Array.isArray(mergedBackupData[tableName])) continue;
+
+      if (knownTableNames.has(tableName)) {
+        knownTablesToImport.push(tableName);
+      } else {
+        skippedUnknownTables.push(tableName);
+      }
+    }
+
+    return {
+      knownTablesToImport,
+      skippedUnknownTables,
+      blockingErrors
+    };
+  }
+
+  function buildImportAuditSummary({
+    importedTables = 0,
+    importedRecords = 0,
+    skippedUnknownTables = [],
+    failedTableErrors = []
+  } = {}) {
+    const uniqueSkippedUnknownTables = [...new Set((skippedUnknownTables || []).filter(Boolean))];
+    const normalizedFailedTableErrors = (failedTableErrors || []).filter(Boolean);
+
+    return {
+      importedTables,
+      importedRecords,
+      skippedUnknownTables: uniqueSkippedUnknownTables,
+      failedTableErrors: normalizedFailedTableErrors,
+      successText: `成功：${importedTables} 个表 / ${importedRecords} 条记录`,
+      skippedText: uniqueSkippedUnknownTables.length > 0
+        ? `跳过：${uniqueSkippedUnknownTables.length} 个未知表（${uniqueSkippedUnknownTables.join('、')}）`
+        : '跳过：0 个未知表',
+      failedText: normalizedFailedTableErrors.length > 0
+        ? `失败：${normalizedFailedTableErrors.length} 个表（${normalizedFailedTableErrors.join('；')}）`
+        : '失败：0 个表'
+    };
+  }
+
+  function formatImportAuditSummaryHtml(summary) {
+    if (!summary) return '';
+    return `${summary.successText}<br>${summary.skippedText}<br>${summary.failedText}`;
+  }
+
+  function buildImportObservabilityContext({
+    entryPath = 'unknown',
+    sampleHint = 'unknown',
+    stage = 'unknown',
+    skippedCount = 0,
+    failedCount = 0
+  } = {}) {
+    return {
+      entryPath,
+      sampleHint: sampleHint || 'unknown',
+      stage,
+      skippedCount: Number.isFinite(skippedCount) ? skippedCount : 0,
+      failedCount: Number.isFinite(failedCount) ? failedCount : 0
+    };
+  }
+
+  function logImportObservability(level = 'log', context = {}) {
+    const normalizedContext = buildImportObservabilityContext(context);
+    const logger = level === 'error'
+      ? console.error
+      : level === 'warn'
+        ? console.warn
+        : console.log;
+    logger('[导入观测]', normalizedContext);
+    return normalizedContext;
+  }
+
+  function buildImportSuccessAlertMessage(mainSentence, importAuditSummary) {
+    const summaryHtml = formatImportAuditSummaryHtml(importAuditSummary);
+    if (!summaryHtml) {
+      return `${mainSentence}<br><br>页面不会自动刷新，您可以稍后手动刷新，也可以点击“立即刷新”同步更改。`;
+    }
+    return `${mainSentence}<br><br>${summaryHtml}<br><br>页面不会自动刷新，您可以稍后手动刷新，也可以点击“立即刷新”同步更改。`;
+  }
+
+  function buildImportFailureAlertMessage(entryLabel, errorMessage, importAuditSummary) {
+    const summaryHtml = formatImportAuditSummaryHtml(importAuditSummary);
+    if (!summaryHtml) {
+      return `${entryLabel}失败：文件应用失败: ${errorMessage}`;
+    }
+    return `${entryLabel}失败：文件应用失败: ${errorMessage}<br><br>${summaryHtml}`;
+  }
+
+  async function importStreamedBackup(backupData, precheckResult = null) {
+    const compatibilityPrecheck = precheckResult || precheckFullImportCompatibility(backupData);
+
+    console.log('[完整导入][预检结果]', compatibilityPrecheck);
+    if (compatibilityPrecheck.skippedUnknownTables.length > 0) {
+      console.warn(`[完整导入] 发现未知表，已跳过: ${compatibilityPrecheck.skippedUnknownTables.join(', ')}`);
+    }
+    if (compatibilityPrecheck.blockingErrors.length > 0) {
+      throw new Error(`完整导入预检失败（数据库未清空）: ${compatibilityPrecheck.blockingErrors.join('；')}`);
+    }
+
     try {
       await db.transaction('rw', db.tables, async () => {
 
@@ -6445,14 +7624,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
 
-        for (const tableName in backupData) {
-          if (Array.isArray(backupData[tableName])) {
-            console.log(`正在导入表: ${tableName}, 记录数: ${backupData[tableName].length}`);
-            await db.table(tableName).bulkPut(backupData[tableName]);
-          }
+        for (const tableName of compatibilityPrecheck.knownTablesToImport) {
+          const tableData = backupData[tableName];
+          if (!Array.isArray(tableData)) continue;
+
+          console.log(`正在导入表: ${tableName}, 记录数: ${tableData.length}`);
+          await db.table(tableName).bulkPut(tableData);
         }
       });
 
+      return compatibilityPrecheck;
     } catch (error) {
 
       throw new Error(`数据库写入失败: ${error.message}`);
@@ -6493,6 +7674,7 @@ document.addEventListener('DOMContentLoaded', () => {
         type: backupType,
         content: backupDataContent
       };
+      pendingImportSampleHint = file?.name || 'unknown';
 
 
       openImportOptionsModal(backupDataContent);
@@ -6500,6 +7682,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (error) {
       console.error("导入数据时出错:", error);
       pendingBackupData = null;
+      pendingImportSampleHint = 'unknown';
       await showCustomAlert('导入失败', `文件解析或应用失败: ${error.message}`);
     }
   }
@@ -6603,18 +7786,59 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    await showCustomAlert("请稍候...", "正在执行完全导入，请勿关闭页面...");
-
     try {
+      const compatibilityPrecheck = precheckFullImportCompatibility(backupInfo.content);
+      console.log('[完整导入][预检结果]', compatibilityPrecheck);
+      logImportObservability('log', {
+        entryPath: 'full',
+        sampleHint: pendingImportSampleHint,
+        stage: 'precheck',
+        skippedCount: compatibilityPrecheck.skippedUnknownTables.length,
+        failedCount: compatibilityPrecheck.blockingErrors.length
+      });
+      if (compatibilityPrecheck.skippedUnknownTables.length > 0) {
+        console.warn(`[完整导入] 发现未知表，已跳过: ${compatibilityPrecheck.skippedUnknownTables.join(', ')}`);
+      }
+      if (compatibilityPrecheck.blockingErrors.length > 0) {
+        throw new Error(`完整导入预检失败（数据库未清空）: ${compatibilityPrecheck.blockingErrors.join('；')}`);
+      }
+
+      await showCustomAlert("请稍候...", "正在执行完全导入，请勿关闭页面...");
+
+      let importAuditSummary = null;
       if (backupInfo.type === 'streamed') {
-        await importStreamedBackup(backupInfo.content);
+        const streamedPrecheck = await importStreamedBackup(backupInfo.content, compatibilityPrecheck);
+        const importedRecords = streamedPrecheck.knownTablesToImport.reduce((sum, tableName) => {
+          const records = backupInfo.content[tableName];
+          return sum + (Array.isArray(records) ? records.length : 0);
+        }, 0);
+        importAuditSummary = buildImportAuditSummary({
+          importedTables: streamedPrecheck.knownTablesToImport.length,
+          importedRecords,
+          skippedUnknownTables: streamedPrecheck.skippedUnknownTables,
+          failedTableErrors: []
+        });
       } else if (backupInfo.type === 'legacy') {
-        await importLegacyBackup(backupInfo.content);
+        importAuditSummary = await importLegacyBackup(backupInfo.content, compatibilityPrecheck);
       } else {
         throw new Error("未知的备份类型。");
       }
 
-      await showCustomAlert('导入成功', '所有数据已成功恢复！应用即将刷新以应用所有更改。');
+      logImportObservability('log', {
+        entryPath: 'full',
+        sampleHint: pendingImportSampleHint,
+        stage: 'complete',
+        skippedCount: importAuditSummary?.skippedUnknownTables?.length || 0,
+        failedCount: importAuditSummary?.failedTableErrors?.length || 0
+      });
+
+      await promptReloadChoice({
+        reason: 'full-import',
+        alertTitle: '导入成功',
+        alertMessage: buildImportSuccessAlertMessage('所有数据已成功恢复！', importAuditSummary),
+        confirmTitle: '立即刷新应用备份？',
+        confirmMessage: '导入完成后不会自动刷新。点击“立即刷新”即可应用更改，或稍后手动刷新。'
+      });
       try {
         const restoredApiConfig = await db.apiConfig.get('main');
         if (restoredApiConfig) {
@@ -6641,13 +7865,21 @@ document.addEventListener('DOMContentLoaded', () => {
       } catch (e) {
         console.error("同步配置失败:", e);
       }
-      setTimeout(() => window.location.reload(), 1500);
 
     } catch (error) {
       console.error("完全导入失败:", error);
-      await showCustomAlert('导入失败', `文件应用失败: ${error.message}`);
+      const importAuditSummary = error?.importAuditSummary || null;
+      logImportObservability('error', {
+        entryPath: 'full',
+        sampleHint: pendingImportSampleHint,
+        stage: 'fail',
+        skippedCount: importAuditSummary?.skippedUnknownTables?.length || 0,
+        failedCount: importAuditSummary?.failedTableErrors?.length || 1
+      });
+      await showCustomAlert('导入失败', buildImportFailureAlertMessage('完整导入', error.message, importAuditSummary));
     } finally {
       pendingBackupData = null;
+      pendingImportSampleHint = 'unknown';
     }
   }
 
@@ -6767,6 +7999,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const typesToMerge = Array.from(selectedItems).map(item => item.dataset.typeId);
     const dataToMerge = backupInfo.content;
+    const knownTableNames = new Set(db.tables.map(table => table.name));
+    const skippedUnknownTables = [];
+    let importedTables = 0;
+    let importedRecords = 0;
+    const failedTableErrors = [];
+
+    const describeSkippedUnknown = () => {
+      if (skippedUnknownTables.length === 0) return '';
+      return `\n\n⚠️ 已跳过 ${skippedUnknownTables.length} 个未知表：${skippedUnknownTables.join('、')}`;
+    };
 
     const confirmed = await showCustomConfirm(
       '确认合并？',
@@ -6779,26 +8021,54 @@ document.addEventListener('DOMContentLoaded', () => {
     await showCustomAlert("请稍候...", "正在合并数据，请勿关闭页面...");
 
     try {
+      logImportObservability('log', {
+        entryPath: 'selective',
+        sampleHint: pendingImportSampleHint,
+        stage: 'precheck',
+        skippedCount: skippedUnknownTables.length,
+        failedCount: 0
+      });
 
       await db.transaction('rw', db.tables, async () => {
         for (const type of typesToMerge) {
-          const data = dataToMerge[type];
+          const tableName = type;
+          const data = dataToMerge[tableName];
           if (!data) continue;
 
-          const table = db.table(type);
-          if (!table) {
-            console.warn(`找不到表: ${type}, 跳过...`);
+          if (!knownTableNames.has(tableName)) {
+            if (!skippedUnknownTables.includes(type)) {
+              skippedUnknownTables.push(type);
+            }
+            console.warn(`[选择性导入] 找不到表: ${type}, 跳过...`);
             continue;
           }
+
+          const table = db.table(tableName);
 
           if (Array.isArray(data)) {
 
             console.log(`正在合并 ${data.length} 条记录到 ${type}...`);
-            await table.bulkPut(data);
+            try {
+              await table.bulkPut(data);
+              importedTables++;
+              importedRecords += data.length;
+            } catch (error) {
+              const reason = `表 ${type} 写入失败: ${error.message}`;
+              failedTableErrors.push(reason);
+              throw error;
+            }
           } else if (typeof data === 'object' && data.id) {
 
             console.log(`正在合并单条记录到 ${type}...`);
-            await table.put(data);
+            try {
+              await table.put(data);
+              importedTables++;
+              importedRecords += 1;
+            } catch (error) {
+              const reason = `表 ${type} 写入失败: ${error.message}`;
+              failedTableErrors.push(reason);
+              throw error;
+            }
           } else if (typeof data === 'object') {
 
             console.log(`正在合并非标对象到 ${type}...`);
@@ -6815,24 +8085,118 @@ document.addEventListener('DOMContentLoaded', () => {
               mergedData.id = 'main';
             }
 
-            await table.put(mergedData);
+            try {
+              await table.put(mergedData);
+              importedTables++;
+              importedRecords += 1;
+            } catch (error) {
+              const reason = `表 ${type} 写入失败: ${error.message}`;
+              failedTableErrors.push(reason);
+              throw error;
+            }
           }
         }
       });
 
-      await showCustomAlert('合并成功', '数据已成功合并！应用即将刷新以应用所有更改。');
-      setTimeout(() => window.location.reload(), 1500);
+      const importAuditSummary = buildImportAuditSummary({
+        importedTables,
+        importedRecords,
+        skippedUnknownTables,
+        failedTableErrors
+      });
+      logImportObservability('log', {
+        entryPath: 'selective',
+        sampleHint: pendingImportSampleHint,
+        stage: 'complete',
+        skippedCount: importAuditSummary.skippedUnknownTables.length,
+        failedCount: importAuditSummary.failedTableErrors.length
+      });
+      await promptReloadChoice({
+        reason: 'selective-import',
+        alertTitle: '合并成功',
+        alertMessage: buildImportSuccessAlertMessage('选中的数据已成功合并！', importAuditSummary),
+        confirmTitle: '立即刷新以应用新数据？',
+        confirmMessage: '选择性导入完成后不会自动刷新。点击“立即刷新”即可应用更改，或稍后手动刷新。'
+      });
 
     } catch (error) {
       console.error("选择性导入失败:", error);
-      await showCustomAlert('合并失败', `文件应用失败: ${error.message}`);
+      const importAuditSummary = buildImportAuditSummary({
+        importedTables,
+        importedRecords,
+        skippedUnknownTables,
+        failedTableErrors: failedTableErrors.length > 0 ? failedTableErrors : [error.message]
+      });
+      logImportObservability('error', {
+        entryPath: 'selective',
+        sampleHint: pendingImportSampleHint,
+        stage: 'fail',
+        skippedCount: importAuditSummary.skippedUnknownTables.length,
+        failedCount: importAuditSummary.failedTableErrors.length
+      });
+      await showCustomAlert('合并失败', buildImportFailureAlertMessage('选择性导入', error.message, importAuditSummary));
     } finally {
       pendingBackupData = null;
+      pendingImportSampleHint = 'unknown';
     }
   }
 
 
-  async function importLegacyBackup(backupData) {
+  async function importLegacyBackup(backupData, precheckResult = null) {
+    const knownTableNames = new Set(db.tables.map(table => table.name));
+    const skippedUnknownTables = [];
+    for (const tableName in backupData) {
+      if (!Array.isArray(backupData[tableName])) continue;
+      if (!knownTableNames.has(tableName)) {
+        skippedUnknownTables.push(tableName);
+      }
+    }
+    if (precheckResult && Array.isArray(precheckResult.skippedUnknownTables)) {
+      skippedUnknownTables.push(...precheckResult.skippedUnknownTables);
+    }
+
+    let importedTables = 0;
+    let importedRecords = 0;
+    const failedTableErrors = [];
+
+    const createAuditedError = (message) => {
+      const importAuditSummary = buildImportAuditSummary({
+        importedTables,
+        importedRecords,
+        skippedUnknownTables,
+        failedTableErrors
+      });
+      const auditedError = new Error(message);
+      auditedError.importAuditSummary = importAuditSummary;
+      return auditedError;
+    };
+
+    const bulkPutIfArray = async (tableName, records) => {
+      if (!Array.isArray(records) || records.length === 0) return;
+      try {
+        await db.table(tableName).bulkPut(records);
+        importedTables++;
+        importedRecords += records.length;
+      } catch (error) {
+        const reason = `表 ${tableName} 写入失败: ${error.message}`;
+        failedTableErrors.push(reason);
+        throw createAuditedError(reason);
+      }
+    };
+
+    const putIfExists = async (tableName, record) => {
+      if (!record) return;
+      try {
+        await db.table(tableName).put(record);
+        importedTables++;
+        importedRecords += 1;
+      } catch (error) {
+        const reason = `表 ${tableName} 写入失败: ${error.message}`;
+        failedTableErrors.push(reason);
+        throw createAuditedError(reason);
+      }
+    };
+
     try {
       await db.transaction('rw', db.tables, async () => {
         await db.chats.clear();
@@ -6842,56 +8206,68 @@ document.addEventListener('DOMContentLoaded', () => {
           await table.clear();
         }
 
-        if (Array.isArray(backupData.chats)) await db.chats.bulkPut(backupData.chats);
-        if (Array.isArray(backupData.worldBooks)) await db.worldBooks.bulkPut(backupData.worldBooks);
+        await bulkPutIfArray('chats', backupData.chats);
+        await bulkPutIfArray('worldBooks', backupData.worldBooks);
 
-        if (Array.isArray(backupData.userStickers)) await db.userStickers.bulkPut(backupData.userStickers);
-        if (backupData.apiConfig) await db.apiConfig.put(backupData.apiConfig);
-        if (backupData.globalSettings) await db.globalSettings.put(backupData.globalSettings);
+        await bulkPutIfArray('userStickers', backupData.userStickers);
+        await putIfExists('apiConfig', backupData.apiConfig);
+        await putIfExists('globalSettings', backupData.globalSettings);
 
-        if (Array.isArray(backupData.personaPresets)) await db.personaPresets.bulkPut(backupData.personaPresets);
-        if (backupData.musicLibrary) await db.musicLibrary.put(backupData.musicLibrary);
-        if (backupData.qzoneSettings) await db.qzoneSettings.put(backupData.qzoneSettings);
-        if (Array.isArray(backupData.qzonePosts)) await db.qzonePosts.bulkPut(backupData.qzonePosts);
-        if (Array.isArray(backupData.qzoneAlbums)) await db.qzoneAlbums.bulkPut(backupData.qzoneAlbums);
-        if (Array.isArray(backupData.qzonePhotos)) await db.qzonePhotos.bulkPut(backupData.qzonePhotos);
-        if (Array.isArray(backupData.favorites)) await db.favorites.bulkPut(backupData.favorites);
-        if (Array.isArray(backupData.qzoneGroups)) await db.qzoneGroups.bulkPut(backupData.qzoneGroups);
-        if (Array.isArray(backupData.memories)) await db.memories.bulkPut(backupData.memories);
-        if (Array.isArray(backupData.worldBookCategories)) await db.worldBookCategories.bulkPut(backupData.worldBookCategories);
-        if (Array.isArray(backupData.apiPresets)) await db.apiPresets.bulkPut(backupData.apiPresets);
-        if (Array.isArray(backupData.soundPresets)) await db.soundPresets.bulkPut(backupData.soundPresets);
-        if (Array.isArray(backupData.shoppingProducts)) await db.shoppingProducts.bulkPut(backupData.shoppingProducts);
-        if (Array.isArray(backupData.callRecords)) await db.callRecords.bulkPut(backupData.callRecords);
-        if (Array.isArray(backupData.renderingRules)) await db.renderingRules.bulkPut(backupData.renderingRules);
-        if (Array.isArray(backupData.doubanPosts)) await db.doubanPosts.bulkPut(backupData.doubanPosts);
-        if (Array.isArray(backupData.stickerCategories)) await db.stickerCategories.bulkPut(backupData.stickerCategories);
-        if (Array.isArray(backupData.appearancePresets)) await db.appearancePresets.bulkPut(backupData.appearancePresets);
-        if (Array.isArray(backupData.presets)) await db.presets.bulkPut(backupData.presets);
-        if (Array.isArray(backupData.presetCategories)) await db.presetCategories.bulkPut(backupData.presetCategories);
-        if (Array.isArray(backupData.npcs)) await db.npcs.bulkPut(backupData.npcs);
+        await bulkPutIfArray('personaPresets', backupData.personaPresets);
+        await putIfExists('musicLibrary', backupData.musicLibrary);
+        await putIfExists('qzoneSettings', backupData.qzoneSettings);
+        await bulkPutIfArray('qzonePosts', backupData.qzonePosts);
+        await bulkPutIfArray('qzoneAlbums', backupData.qzoneAlbums);
+        await bulkPutIfArray('qzonePhotos', backupData.qzonePhotos);
+        await bulkPutIfArray('favorites', backupData.favorites);
+        await bulkPutIfArray('qzoneGroups', backupData.qzoneGroups);
+        await bulkPutIfArray('memories', backupData.memories);
+        await bulkPutIfArray('worldBookCategories', backupData.worldBookCategories);
+        await bulkPutIfArray('apiPresets', backupData.apiPresets);
+        await bulkPutIfArray('shoppingProducts', backupData.shoppingProducts);
+        await bulkPutIfArray('callRecords', backupData.callRecords);
+        await bulkPutIfArray('renderingRules', backupData.renderingRules);
+        await bulkPutIfArray('doubanPosts', backupData.doubanPosts);
+        await bulkPutIfArray('stickerCategories', backupData.stickerCategories);
+        await bulkPutIfArray('appearancePresets', backupData.appearancePresets);
+        await bulkPutIfArray('presets', backupData.presets);
+        await bulkPutIfArray('presetCategories', backupData.presetCategories);
+        await bulkPutIfArray('npcs', backupData.npcs);
 
         // 新增的表
-        if (Array.isArray(backupData.stickerVisionCache)) await db.stickerVisionCache.bulkPut(backupData.stickerVisionCache);
-        if (Array.isArray(backupData.shoppingCategories)) await db.shoppingCategories.bulkPut(backupData.shoppingCategories);
-        if (Array.isArray(backupData.customAvatarFrames)) await db.customAvatarFrames.bulkPut(backupData.customAvatarFrames);
-        if (Array.isArray(backupData.readingLibrary)) await db.readingLibrary.bulkPut(backupData.readingLibrary);
-        if (Array.isArray(backupData.quickReplies)) await db.quickReplies.bulkPut(backupData.quickReplies);
-        if (Array.isArray(backupData.quickReplyCategories)) await db.quickReplyCategories.bulkPut(backupData.quickReplyCategories);
-        if (Array.isArray(backupData.npcGroups)) await db.npcGroups.bulkPut(backupData.npcGroups);
-        if (Array.isArray(backupData.naiPresets)) await db.naiPresets.bulkPut(backupData.naiPresets);
-        if (Array.isArray(backupData.grAuthors)) await db.grAuthors.bulkPut(backupData.grAuthors);
-        if (Array.isArray(backupData.grStories)) await db.grStories.bulkPut(backupData.grStories);
-        if (backupData.userWallet) await db.userWallet.put(backupData.userWallet);
-        if (Array.isArray(backupData.userTransactions)) await db.userTransactions.bulkPut(backupData.userTransactions);
-        if (Array.isArray(backupData.funds)) await db.funds.bulkPut(backupData.funds);
-        if (Array.isArray(backupData.auctions)) await db.auctions.bulkPut(backupData.auctions);
-        if (Array.isArray(backupData.inventory)) await db.inventory.bulkPut(backupData.inventory);
-        if (Array.isArray(backupData.emails)) await db.emails.bulkPut(backupData.emails);
-        if (Array.isArray(backupData.watchTogetherPlaylist)) await db.watchTogetherPlaylist.bulkPut(backupData.watchTogetherPlaylist);
+        await bulkPutIfArray('stickerVisionCache', backupData.stickerVisionCache);
+        await bulkPutIfArray('shoppingCategories', backupData.shoppingCategories);
+        await bulkPutIfArray('customAvatarFrames', backupData.customAvatarFrames);
+        await bulkPutIfArray('readingLibrary', backupData.readingLibrary);
+        await bulkPutIfArray('quickReplies', backupData.quickReplies);
+        await bulkPutIfArray('quickReplyCategories', backupData.quickReplyCategories);
+        await bulkPutIfArray('npcGroups', backupData.npcGroups);
+        await bulkPutIfArray('naiPresets', backupData.naiPresets);
+        await bulkPutIfArray('grAuthors', backupData.grAuthors);
+        await bulkPutIfArray('grStories', backupData.grStories);
+        await putIfExists('userWallet', backupData.userWallet);
+        await bulkPutIfArray('userTransactions', backupData.userTransactions);
+        await bulkPutIfArray('funds', backupData.funds);
+        await bulkPutIfArray('auctions', backupData.auctions);
+        await bulkPutIfArray('inventory', backupData.inventory);
+        await bulkPutIfArray('emails', backupData.emails);
+        await bulkPutIfArray('watchTogetherPlaylist', backupData.watchTogetherPlaylist);
+      });
+
+      return buildImportAuditSummary({
+        importedTables,
+        importedRecords,
+        skippedUnknownTables,
+        failedTableErrors
       });
     } catch (error) {
-      throw new Error(`旧版备份数据写入数据库失败: ${error.message}`);
+      if (error?.importAuditSummary) {
+        throw error;
+      }
+
+      const reason = `旧版备份写入失败: ${error.message}`;
+      failedTableErrors.push(reason);
+      throw createAuditedError(reason);
     }
   }
 
@@ -7114,7 +8490,8 @@ document.addEventListener('DOMContentLoaded', () => {
       enableThoughts: false,              // 新增：全局心声开关，默认关闭
       enableQzoneActions: false,          // 新增：全局动态开关，默认关闭
       enableViewMyPhone: false,           // 新增：全局查看User手机开关，默认关闭
-      enableCrossChat: true,              // 新增：全局跨聊天消息开关（群聊↔私聊），默认开启
+      streamEnabled: false,               // 流式传输开关，默认关闭以避免兼容性风险
+      fallbackEnabled: true,              // 回退逻辑开关，默认开启以确保可用性
       enableBackgroundActivity: false,
       backgroundActivityInterval: 60,
       enableViewMyPhoneInBackground: false,  // 新增：后台查看用户手机开关，默认关闭
@@ -9202,6 +10579,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const savedTemp = state.globalSettings.apiTemperature || 0.8;
     tempSlider.value = savedTemp;
     tempValue.textContent = savedTemp;
+    const streamingSwitch = document.getElementById('api-streaming-switch');
+    if (streamingSwitch) {
+      streamingSwitch.checked = typeof state.globalSettings.streamEnabled === 'boolean'
+        ? state.globalSettings.streamEnabled
+        : false;
+    }
+    const fallbackSwitch = document.getElementById('api-streaming-fallback-switch');
+    if (fallbackSwitch) {
+      fallbackSwitch.checked = typeof state.globalSettings.fallbackEnabled === 'boolean'
+        ? state.globalSettings.fallbackEnabled
+        : true;
+    }
+    syncStreamingSettingsUiState();
     
     // 方案4：加载API历史记录开关状态（默认关闭以减小导出文件体积）
     const apiHistorySwitch = document.getElementById('enable-api-history-switch');
@@ -9396,6 +10786,35 @@ document.addEventListener('DOMContentLoaded', () => {
 
     loadApiPresetsDropdown(forcePresetId);
     displayTotalImageSize();
+  }
+  function syncStreamingSettingsUiState() {
+    const streamingSwitch = document.getElementById('api-streaming-switch');
+    const fallbackSwitch = document.getElementById('api-streaming-fallback-switch');
+    const fallbackItem = fallbackSwitch ? fallbackSwitch.closest('.settings-item') : null;
+    const fallbackToggle = fallbackSwitch ? fallbackSwitch.closest('.toggle-switch') : null;
+    const statusText = document.getElementById('api-streaming-status-text');
+    const streamEnabled = streamingSwitch ? streamingSwitch.checked : false;
+
+    if (statusText) {
+      statusText.textContent = streamEnabled ? '流式已开启' : '流式已关闭';
+    }
+    if (fallbackSwitch) {
+      fallbackSwitch.disabled = !streamEnabled;
+    }
+    if (fallbackItem) {
+      if (!streamEnabled) {
+        fallbackItem.classList.add('disabled-state');
+      } else {
+        fallbackItem.classList.remove('disabled-state');
+      }
+    }
+    if (fallbackToggle) {
+      if (!streamEnabled) {
+        fallbackToggle.classList.add('disabled-state');
+      } else {
+        fallbackToggle.classList.remove('disabled-state');
+      }
+    }
   }
 
   window.renderApiSettingsProxy = renderApiSettings;
@@ -13789,6 +15208,109 @@ ${stickerContext}
       }
     }
     let needsImmediateReaction = false;
+    let streamingPlaceholderTimestamp = null;
+    const STREAMING_RENDER_THROTTLE_MS = 80;
+    let pendingStreamingRenderContent = null;
+    let streamingRenderTimer = null;
+    let streamDeltaCount = 0;
+    let streamRenderFlushCount = 0;
+    let streamStorageWriteCount = 0;
+    let hasPersistedMainChatState = false;
+
+    async function persistMainChatStateOnce(reason) {
+      if (hasPersistedMainChatState) {
+        return;
+      }
+      await db.chats.put(chat);
+      hasPersistedMainChatState = true;
+      streamStorageWriteCount += 1;
+    }
+
+    function flushStreamingPlaceholderRender(force = false) {
+      if (!streamingPlaceholderTimestamp || !isViewingThisChat) {
+        return;
+      }
+      if (!force && pendingStreamingRenderContent === null) {
+        return;
+      }
+
+      const bubble = document.querySelector(`.message-bubble[data-timestamp="${streamingPlaceholderTimestamp}"]`);
+      if (!bubble) {
+        pendingStreamingRenderContent = null;
+        return;
+      }
+      const contentEl = bubble.querySelector('.content');
+      if (!contentEl) {
+        pendingStreamingRenderContent = null;
+        return;
+      }
+
+      const plainText = qqUndefinedFilter(String(pendingStreamingRenderContent || ''));
+      const html = parseMarkdown(plainText).replace(/\n/g, '<br>');
+      contentEl.innerHTML = html || '&nbsp;';
+      pendingStreamingRenderContent = null;
+      streamRenderFlushCount += 1;
+    }
+
+    function renderStreamingPlaceholderContent(content) {
+      pendingStreamingRenderContent = String(content || '');
+      if (streamingRenderTimer) {
+        return;
+      }
+      streamingRenderTimer = setTimeout(() => {
+        streamingRenderTimer = null;
+        flushStreamingPlaceholderRender(false);
+      }, STREAMING_RENDER_THROTTLE_MS);
+    }
+
+    function forceRenderStreamingPlaceholderContent(content) {
+      pendingStreamingRenderContent = String(content || '');
+      if (streamingRenderTimer) {
+        clearTimeout(streamingRenderTimer);
+        streamingRenderTimer = null;
+      }
+      flushStreamingPlaceholderRender(true);
+    }
+
+    function removeStreamingPlaceholder() {
+      if (!streamingPlaceholderTimestamp) {
+        return;
+      }
+
+      if (streamingRenderTimer) {
+        clearTimeout(streamingRenderTimer);
+        streamingRenderTimer = null;
+      }
+      pendingStreamingRenderContent = null;
+
+      chat.history = chat.history.filter(msg => msg.timestamp !== streamingPlaceholderTimestamp);
+
+      const bubble = document.querySelector(`.message-bubble[data-timestamp="${streamingPlaceholderTimestamp}"]`);
+      const wrapper = bubble ? bubble.closest('.message-wrapper') : null;
+      if (wrapper && wrapper.parentNode) {
+        wrapper.parentNode.removeChild(wrapper);
+      }
+
+      streamingPlaceholderTimestamp = null;
+    }
+
+    async function ensureStreamingPlaceholder(isCurrentMainChatRequest) {
+      if (!isViewingThisChat || !isCurrentMainChatRequest() || streamingPlaceholderTimestamp) {
+        return;
+      }
+
+      const temporaryMessage = {
+        role: 'assistant',
+        senderName: chat.name,
+        content: '▍',
+        timestamp: Date.now() + 1,
+        isTemporary: true
+      };
+
+      streamingPlaceholderTimestamp = temporaryMessage.timestamp;
+      chat.history.push(temporaryMessage);
+      await appendMessage(temporaryMessage, chat, true);
+    }
     try {
       const {
         proxyUrl,
@@ -16134,8 +17656,23 @@ ${chat.settings.myAvatarLibrary && chat.settings.myAvatarLibrary.length > 0 ? ch
       let isGemini = proxyUrl === GEMINI_API_URL;
       let geminiConfig = toGeminiRequestData(model, apiKey, systemPrompt, messagesPayload)
 
-      // 创建新的 AbortController
-      currentApiController = new AbortController();
+      const previousController = mainChatRequestLifecycle.controller;
+      const previousRequestId = mainChatRequestLifecycle.requestId;
+      if (previousController && previousRequestId) {
+        try {
+          previousController.abort();
+        } catch (abortError) {
+        }
+        updateMainChatRequestLifecycle(previousRequestId, 'aborted');
+      }
+
+      const streamRequestId = createStreamRequestId('main-chat');
+      const requestController = new AbortController();
+      beginMainChatRequestLifecycle(streamRequestId, requestController, {
+        provider: isGemini ? 'gemini' : 'openai-compatible'
+      });
+
+      const isCurrentMainChatRequest = () => isMainChatRequestCurrent(streamRequestId);
 
       // 显示暂停调用按钮
       const stopBtn = document.getElementById('stop-api-call-btn');
@@ -16145,10 +17682,20 @@ ${chat.settings.myAvatarLibrary && chat.settings.myAvatarLibrary.length > 0 ? ch
       }
 
       // 记录API请求数据
+      const streamEventGuard = createStreamEventGuard(streamRequestId);
+      const streamFlags = getStreamRolloutFlags();
+      let streamProtocolMeta = {
+        requestId: streamRequestId,
+        provider: isGemini ? 'gemini' : 'openai-compatible',
+        fallbackUsed: false,
+        endState: 'pending'
+      };
+
       const requestData = {
         timestamp: Date.now(),
         chatId: chatId,
         chatName: chat.name,
+        requestId: streamRequestId,
         model: model,
         systemPrompt: systemPrompt,
         messages: isGemini ? messagesPayload : [{
@@ -16157,83 +17704,205 @@ ${chat.settings.myAvatarLibrary && chat.settings.myAvatarLibrary.length > 0 ? ch
         }, ...messagesPayload],
         temperature: state.globalSettings.apiTemperature || 0.8,
         isGemini: isGemini,
-        apiUrl: isGemini ? geminiConfig.url : `${proxyUrl}/v1/chat/completions`
+        apiUrl: isGemini ? geminiConfig.url : `${proxyUrl}/v1/chat/completions`,
+        streamEnabled: streamFlags.streamEnabled,
+        fallbackEnabled: streamFlags.fallbackEnabled
       };
 
-      let response;
+      let aiResponseContent = '';
+      let streamResult = null;
+
       try {
-        response = isGemini ?
-          await fetch(geminiConfig.url, {
-            ...geminiConfig.data,
-            signal: currentApiController.signal
-          }) :
-          await fetch(`${proxyUrl}/v1/chat/completions`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${apiKey}`
-            },
-            body: JSON.stringify({
-              model: model,
-              messages: [{
-                role: 'system',
-                content: systemPrompt
-              }, ...messagesPayload],
-              temperature: state.globalSettings.apiTemperature || 0.8,
-              stream: false
-            }),
-            signal: currentApiController.signal
-          });
+        await ensureStreamingPlaceholder(isCurrentMainChatRequest);
+
+        streamResult = await streamChat({
+          proxyUrl,
+          apiKey,
+          model,
+          systemPrompt,
+          messagesPayload,
+          isGemini,
+          geminiConfig,
+          signal: requestController.signal,
+          requestId: streamRequestId,
+          streamEnabled: streamFlags.streamEnabled,
+          fallbackEnabled: streamFlags.fallbackEnabled,
+          onStart: (event) => {
+            if (!isCurrentMainChatRequest()) {
+              return;
+            }
+            const safeEvent = streamEventGuard(event);
+            streamProtocolMeta = {
+              requestId: safeEvent.requestId,
+              provider: safeEvent.provider,
+              fallbackUsed: safeEvent.fallbackUsed,
+              endState: safeEvent.endState
+            };
+            updateMainChatRequestLifecycle(streamRequestId, safeEvent.endState, {
+              provider: safeEvent.provider,
+              fallbackUsed: safeEvent.fallbackUsed
+            });
+          },
+          onDelta: (event) => {
+            if (!isCurrentMainChatRequest()) {
+              return;
+            }
+            const safeEvent = streamEventGuard(event);
+            if (safeEvent.delta) {
+              aiResponseContent += safeEvent.delta;
+              streamDeltaCount += 1;
+              renderStreamingPlaceholderContent(aiResponseContent);
+            }
+            streamProtocolMeta = {
+              requestId: safeEvent.requestId,
+              provider: safeEvent.provider,
+              fallbackUsed: safeEvent.fallbackUsed,
+              endState: safeEvent.endState
+            };
+            updateMainChatRequestLifecycle(streamRequestId, 'streaming', {
+              provider: safeEvent.provider,
+              fallbackUsed: safeEvent.fallbackUsed
+            });
+          },
+          onDone: (event) => {
+            if (!isCurrentMainChatRequest()) {
+              return;
+            }
+            const safeEvent = streamEventGuard(event);
+            streamProtocolMeta = {
+              requestId: safeEvent.requestId,
+              provider: safeEvent.provider,
+              fallbackUsed: safeEvent.fallbackUsed,
+              endState: safeEvent.endState
+            };
+            aiResponseContent = safeEvent.finalText || aiResponseContent;
+            forceRenderStreamingPlaceholderContent(aiResponseContent);
+            updateMainChatRequestLifecycle(streamRequestId, 'completed', {
+              provider: safeEvent.provider,
+              fallbackUsed: safeEvent.fallbackUsed
+            });
+          },
+          onError: (event) => {
+            if (!isCurrentMainChatRequest()) {
+              return;
+            }
+            const safeEvent = streamEventGuard(event);
+            streamProtocolMeta = {
+              requestId: safeEvent.requestId,
+              provider: safeEvent.provider,
+              fallbackUsed: safeEvent.fallbackUsed,
+              endState: safeEvent.endState
+            };
+            updateMainChatRequestLifecycle(streamRequestId, 'errored', {
+              provider: safeEvent.provider,
+              fallbackUsed: safeEvent.fallbackUsed
+            });
+          },
+          onAbort: (event) => {
+            if (!isCurrentMainChatRequest()) {
+              return;
+            }
+            const safeEvent = streamEventGuard(event);
+            streamProtocolMeta = {
+              requestId: safeEvent.requestId,
+              provider: safeEvent.provider,
+              fallbackUsed: safeEvent.fallbackUsed,
+              endState: safeEvent.endState
+            };
+            updateMainChatRequestLifecycle(streamRequestId, 'aborted', {
+              provider: safeEvent.provider,
+              fallbackUsed: safeEvent.fallbackUsed
+            });
+          }
+        });
+
+        if (!isCurrentMainChatRequest()) {
+          return;
+        }
+
+        if (!aiResponseContent && streamResult && typeof streamResult.finalText === 'string') {
+          aiResponseContent = streamResult.finalText;
+        }
       } catch (networkError) {
-        // 隐藏暂停调用按钮
-        if (stopBtn) {
+        if (stopBtn && isCurrentMainChatRequest()) {
           stopBtn.style.display = 'none';
           stopBtn.classList.remove('active');
         }
 
         // 检查是否是用户主动取消
         if (networkError.name === 'AbortError') {
+          streamProtocolMeta.endState = 'aborted';
+          removeStreamingPlaceholder();
+          if (typeof pushTask11Evidence === 'function') {
+            pushTask11Evidence('mainChat', {
+              source: 'runtime',
+              requestId: streamRequestId,
+              endState: 'aborted',
+              deltaCount: streamDeltaCount,
+              renderFlushCount: streamRenderFlushCount,
+              storageWrites: streamStorageWriteCount
+            });
+          }
+          updateMainChatRequestLifecycle(streamRequestId, 'aborted', {
+            provider: streamProtocolMeta.provider,
+            fallbackUsed: streamProtocolMeta.fallbackUsed
+          });
           console.log('API调用已被用户取消');
           // 不添加任何消息到聊天历史，避免AI看到系统消息而困惑
           return;
         }
+        if (isCurrentMainChatRequest()) {
+          updateMainChatRequestLifecycle(streamRequestId, 'errored', {
+            provider: streamProtocolMeta.provider,
+            fallbackUsed: streamProtocolMeta.fallbackUsed
+          });
+        }
         throw new Error(`网络请求失败: ${networkError.message}`);
       } finally {
-        // 清理 controller 和隐藏按钮
-        currentApiController = null;
-        if (stopBtn) {
+        if (stopBtn && isCurrentMainChatRequest()) {
           stopBtn.style.display = 'none';
           stopBtn.classList.remove('active');
         }
       }
 
-      if (!response.ok) {
-        let errorMsg = `API 返回错误: ${response.status} ${response.statusText}`;
-        try {
-          const errorData = await response.json();
-          if (errorData.error && errorData.error.message) {
-            errorMsg += ` - ${errorData.error.message}`;
-          } else {
-            errorMsg += ` - ${JSON.stringify(errorData)}`;
-          }
-        } catch (jsonError) {
-          errorMsg += ` - 响应内容: ${await response.text()}`;
-        }
-        throw new Error(errorMsg);
+      if (!isCurrentMainChatRequest()) {
+        return;
       }
 
-      const data = await response.json();
-      const aiResponseContent = getGeminiResponseText(data);
+      if (!streamResult) {
+        throw new Error('[streamChat] 未返回有效结果');
+      }
+
+      updateMainChatRequestLifecycle(streamRequestId, 'completed', {
+        provider: streamProtocolMeta.provider,
+        fallbackUsed: streamProtocolMeta.fallbackUsed
+      });
 
       // 记录API响应数据
       const responseData = {
         ...requestData,
         responseTimestamp: Date.now(),
-        responseData: data,
+        responseData: streamResult.data,
         aiResponseContent: aiResponseContent,
-        responseStatus: response.status,
-        responseStatusText: response.statusText
+        responseStatus: streamResult.responseStatus,
+        responseStatusText: streamResult.responseStatusText,
+        provider: streamProtocolMeta.provider,
+        fallbackUsed: streamProtocolMeta.fallbackUsed,
+        endState: streamProtocolMeta.endState,
+        streamEnabled: streamFlags.streamEnabled,
+        fallbackEnabled: streamFlags.fallbackEnabled,
+        ttft: streamResult.ttft ?? null
       };
+
+      console.info('[main AI request end]', {
+        requestId: streamResult.requestId,
+        provider: streamProtocolMeta.provider,
+        streamEnabled: streamFlags.streamEnabled,
+        fallbackEnabled: streamFlags.fallbackEnabled,
+        fallbackUsed: streamProtocolMeta.fallbackUsed,
+        endState: streamProtocolMeta.endState,
+        ttft: streamResult.ttft ?? null
+      });
 
       // 方案4：只有在全局设置中启用API历史记录时才保存
       if (state.globalSettings.enableApiHistory) {
@@ -16249,11 +17918,9 @@ ${chat.settings.myAvatarLibrary && chat.settings.myAvatarLibrary.length > 0 ? ch
         }
       }
 
-      // 保存到数据库
-      await db.chats.put(chat);
-
       lastRawAiResponse = aiResponseContent;
       lastResponseTimestamps = [];
+      removeStreamingPlaceholder();
       chat.history = chat.history.filter(msg => !msg.isTemporary);
       const messagesArray = parseAiResponse(aiResponseContent);
 
@@ -16406,7 +18073,7 @@ ${chat.settings.myAvatarLibrary && chat.settings.myAvatarLibrary.length > 0 ? ch
               timestamp: Date.now()
             };
             chat.history.push(aiMessage);
-            await db.chats.put(chat);
+            await persistMainChatStateOnce('video_call_response_reject');
             showScreen('chat-interface-screen');
             renderChatInterface(chatId);
           }
@@ -16425,7 +18092,7 @@ ${chat.settings.myAvatarLibrary && chat.settings.myAvatarLibrary.length > 0 ? ch
               timestamp: Date.now()
             };
             chat.history.push(aiMessage);
-            await db.chats.put(chat);
+            await persistMainChatStateOnce('voice_call_response_reject');
             showScreen('chat-interface-screen');
             renderChatInterface(chatId);
           }
@@ -16688,7 +18355,7 @@ ${chat.settings.myAvatarLibrary && chat.settings.myAvatarLibrary.length > 0 ? ch
                 };
               }
 
-              await db.chats.put(chat);
+              await persistMainChatStateOnce('kinship_response_update');
               renderChatInterface(chatId);
             }
             break;
@@ -18829,7 +20496,20 @@ ${chat.settings.myAvatarLibrary && chat.settings.myAvatarLibrary.length > 0 ? ch
         await triggerAiResponse();
         return;
       }
-      await db.chats.put(chat);
+      await persistMainChatStateOnce('main_chat_final');
+
+      if (typeof pushTask11Evidence === 'function') {
+        pushTask11Evidence('mainChat', {
+          source: 'runtime',
+          requestId: streamRequestId,
+          endState: streamProtocolMeta.endState,
+          deltaCount: streamDeltaCount,
+          renderFlushCount: streamRenderFlushCount,
+          storageWrites: streamStorageWriteCount,
+          tokenToWriteRatio: streamStorageWriteCount > 0 ? (streamDeltaCount / streamStorageWriteCount) : null,
+          parseCompatible: true
+        });
+      }
 
       const qzoneActionTaken = messagesArray.some(action =>
         action.type === 'qzone_post' ||
@@ -18847,6 +20527,7 @@ ${chat.settings.myAvatarLibrary && chat.settings.myAvatarLibrary.length > 0 ? ch
 
 
     } catch (error) {
+      removeStreamingPlaceholder();
 
       chat.history = chat.history.filter(msg => !msg.isTemporary);
 
@@ -18861,7 +20542,7 @@ ${chat.settings.myAvatarLibrary && chat.settings.myAvatarLibrary.length > 0 ? ch
       }
 
       if (!chat.isGroup && chat.relationship?.status === 'blocked_by_ai') {
-        await db.chats.put(chat);
+        await persistMainChatStateOnce('main_chat_error_blocked_by_ai');
       }
 
       videoCallState.isAwaitingResponse = false;
@@ -24941,6 +26622,96 @@ ${longTermMemoryContext}
     preCallContext: ""
   };
 
+  let inCallRequestLifecycle = {
+    requestId: null,
+    controller: null,
+    endState: 'idle',
+    updatedAt: 0
+  };
+
+  let inCallStreamingPlaceholder = {
+    requestId: null,
+    element: null
+  };
+
+  function pushInCallStreamDebug(event = {}) {
+    try {
+      if (!window.__inCallStreamDebug || !Array.isArray(window.__inCallStreamDebug.events)) {
+        window.__inCallStreamDebug = {
+          events: []
+        };
+      }
+      window.__inCallStreamDebug.events.push({
+        ...event,
+        timestamp: Date.now()
+      });
+      if (window.__inCallStreamDebug.events.length > 500) {
+        window.__inCallStreamDebug.events = window.__inCallStreamDebug.events.slice(-500);
+      }
+    } catch (debugError) {
+      console.warn('[in-call debug]', debugError);
+    }
+  }
+
+  function beginInCallRequestLifecycle(requestId, controller) {
+    inCallRequestLifecycle = {
+      requestId,
+      controller,
+      endState: 'pending',
+      updatedAt: Date.now()
+    };
+    pushInCallStreamDebug({
+      type: 'begin',
+      requestId
+    });
+  }
+
+  function isInCallRequestCurrent(requestId) {
+    return Boolean(requestId) && inCallRequestLifecycle.requestId === requestId;
+  }
+
+  function updateInCallRequestLifecycle(requestId, nextState) {
+    if (!isInCallRequestCurrent(requestId)) {
+      return false;
+    }
+
+    inCallRequestLifecycle = {
+      ...inCallRequestLifecycle,
+      endState: nextState,
+      updatedAt: Date.now()
+    };
+
+    pushInCallStreamDebug({
+      type: 'lifecycle',
+      requestId,
+      endState: nextState
+    });
+
+    if (nextState === 'completed' || nextState === 'errored' || nextState === 'aborted') {
+      inCallRequestLifecycle = {
+        ...inCallRequestLifecycle,
+        controller: null,
+        updatedAt: Date.now()
+      };
+    }
+
+    return true;
+  }
+
+  function clearInCallStreamingPlaceholder(requestId = null) {
+    if (requestId && inCallStreamingPlaceholder.requestId && inCallStreamingPlaceholder.requestId !== requestId) {
+      return;
+    }
+    const el = inCallStreamingPlaceholder.element;
+    if (el && el.parentNode) {
+      el.parentNode.removeChild(el);
+    }
+    inCallStreamingPlaceholder = {
+      requestId: null,
+      element: null
+    };
+  }
+
   let voiceCallState = {
     isActive: false,
     isAwaitingResponse: false,
@@ -24999,6 +26770,14 @@ ${longTermMemoryContext}
   function startVideoCall() {
     const chat = state.chats[videoCallState.activeChatId];
     if (!chat) return;
+
+    clearInCallStreamingPlaceholder();
+    inCallRequestLifecycle = {
+      requestId: null,
+      controller: null,
+      endState: 'idle',
+      updatedAt: Date.now()
+    };
 
     videoCallState.isActive = true;
     videoCallState.isAwaitingResponse = false;
@@ -25059,6 +26838,14 @@ ${longTermMemoryContext}
   }
   async function endVideoCall() {
     if (!videoCallState.isActive) return;
+    if (inCallRequestLifecycle.controller && inCallRequestLifecycle.requestId) {
+      try {
+        inCallRequestLifecycle.controller.abort();
+      } catch (abortError) {
+      }
+      updateInCallRequestLifecycle(inCallRequestLifecycle.requestId, 'aborted');
+    }
+    clearInCallStreamingPlaceholder();
     stopTtsQueue();
     document.getElementById('video-call-restore-btn').style.display = 'none';
     const duration = Math.floor((Date.now() - videoCallState.startTime) / 1000);
@@ -25416,28 +27203,180 @@ ${linkedContents}
       });
     }
 
+    const previousController = inCallRequestLifecycle.controller;
+    const previousRequestId = inCallRequestLifecycle.requestId;
+    if (previousController && previousRequestId) {
+      try {
+        previousController.abort();
+      } catch (abortError) {
+      }
+      updateInCallRequestLifecycle(previousRequestId, 'aborted');
+      clearInCallStreamingPlaceholder(previousRequestId);
+      pushInCallStreamDebug({
+        type: 'abort-previous',
+        requestId: previousRequestId
+      });
+    }
+
+    const streamRequestId = createStreamRequestId('in-call');
+    const requestController = new AbortController();
+    beginInCallRequestLifecycle(streamRequestId, requestController);
+    const isCurrentInCallRequest = () => isInCallRequestCurrent(streamRequestId) && videoCallState.isActive;
+
+    const streamEventGuard = createStreamEventGuard(streamRequestId);
+    const streamFlags = getStreamRolloutFlags();
+    let streamProtocolMeta = {
+      requestId: streamRequestId,
+      provider: proxyUrl === GEMINI_API_URL ? 'gemini' : 'openai-compatible',
+      fallbackUsed: false,
+      endState: 'pending'
+    };
+    let aiResponse = '';
+    let streamResult = null;
+
+    const connectingElement = callFeed.querySelector('em');
+    if (connectingElement) connectingElement.remove();
+    clearInCallStreamingPlaceholder();
+    const streamingBubble = document.createElement('div');
+    streamingBubble.className = 'call-message-bubble ai-speech';
+    streamingBubble.dataset.requestId = streamRequestId;
+    streamingBubble.textContent = '...';
+    callFeed.appendChild(streamingBubble);
+    callFeed.scrollTop = callFeed.scrollHeight;
+    inCallStreamingPlaceholder = {
+      requestId: streamRequestId,
+      element: streamingBubble
+    };
+
     try {
       let isGemini = proxyUrl === GEMINI_API_URL;
       let geminiConfig = toGeminiRequestData(model, apiKey, inCallPrompt, messagesForApi)
-      const response = isGemini ? await fetch(geminiConfig.url, geminiConfig.data) : await fetch(`${proxyUrl}/v1/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
+
+      streamResult = await streamChat({
+        proxyUrl,
+        apiKey,
+        model,
+        systemPrompt: inCallPrompt,
+        messagesPayload: messagesForApi.slice(1),
+        isGemini,
+        geminiConfig,
+        signal: requestController.signal,
+        requestId: streamRequestId,
+        streamEnabled: streamFlags.streamEnabled,
+        fallbackEnabled: streamFlags.fallbackEnabled,
+        onStart: (event) => {
+          if (!isCurrentInCallRequest()) {
+            return;
+          }
+          const safeEvent = streamEventGuard(event);
+          streamProtocolMeta = {
+            requestId: safeEvent.requestId,
+            provider: safeEvent.provider,
+            fallbackUsed: safeEvent.fallbackUsed,
+            endState: safeEvent.endState
+          };
+          updateInCallRequestLifecycle(streamRequestId, safeEvent.endState);
         },
-        body: JSON.stringify({
-          model: model,
-          messages: messagesForApi,
-          temperature: state.globalSettings.apiTemperature || 0.8
-        })
+        onDelta: (event) => {
+          if (!isCurrentInCallRequest()) {
+            return;
+          }
+          const safeEvent = streamEventGuard(event);
+          if (safeEvent.delta) {
+            aiResponse += safeEvent.delta;
+            if (inCallStreamingPlaceholder.element && inCallStreamingPlaceholder.requestId === streamRequestId) {
+              inCallStreamingPlaceholder.element.textContent = aiResponse;
+            }
+            pushInCallStreamDebug({
+              type: 'delta',
+              requestId: safeEvent.requestId,
+              length: aiResponse.length
+            });
+          }
+          streamProtocolMeta = {
+            requestId: safeEvent.requestId,
+            provider: safeEvent.provider,
+            fallbackUsed: safeEvent.fallbackUsed,
+            endState: safeEvent.endState
+          };
+          updateInCallRequestLifecycle(streamRequestId, 'streaming');
+        },
+        onDone: (event) => {
+          if (!isCurrentInCallRequest()) {
+            return;
+          }
+          const safeEvent = streamEventGuard(event);
+          streamProtocolMeta = {
+            requestId: safeEvent.requestId,
+            provider: safeEvent.provider,
+            fallbackUsed: safeEvent.fallbackUsed,
+            endState: safeEvent.endState
+          };
+          aiResponse = safeEvent.finalText || aiResponse;
+          if (inCallStreamingPlaceholder.element && inCallStreamingPlaceholder.requestId === streamRequestId) {
+            inCallStreamingPlaceholder.element.textContent = aiResponse;
+          }
+          updateInCallRequestLifecycle(streamRequestId, 'completed');
+          pushInCallStreamDebug({
+            type: 'done',
+            requestId: safeEvent.requestId,
+            length: aiResponse.length,
+            endState: safeEvent.endState
+          });
+        },
+        onError: (event) => {
+          if (!isCurrentInCallRequest()) {
+            return;
+          }
+          const safeEvent = streamEventGuard(event);
+          streamProtocolMeta = {
+            requestId: safeEvent.requestId,
+            provider: safeEvent.provider,
+            fallbackUsed: safeEvent.fallbackUsed,
+            endState: safeEvent.endState
+          };
+          updateInCallRequestLifecycle(streamRequestId, 'errored');
+          pushInCallStreamDebug({
+            type: 'error',
+            requestId: safeEvent.requestId,
+            endState: safeEvent.endState
+          });
+        },
+        onAbort: (event) => {
+          if (!isCurrentInCallRequest()) {
+            return;
+          }
+          const safeEvent = streamEventGuard(event);
+          streamProtocolMeta = {
+            requestId: safeEvent.requestId,
+            provider: safeEvent.provider,
+            fallbackUsed: safeEvent.fallbackUsed,
+            endState: safeEvent.endState
+          };
+          updateInCallRequestLifecycle(streamRequestId, 'aborted');
+          pushInCallStreamDebug({
+            type: 'abort',
+            requestId: safeEvent.requestId,
+            endState: safeEvent.endState
+          });
+        }
       });
-      if (!response.ok) throw new Error((await response.json()).error.message);
 
-      const data = await response.json();
-      const aiResponse = isGemini ? data.candidates[0].content.parts[0].text : data.choices[0].message.content;
+      if (!isCurrentInCallRequest()) {
+        return;
+      }
 
-      const connectingElement = callFeed.querySelector('em');
-      if (connectingElement) connectingElement.remove();
+      if (!aiResponse && streamResult && typeof streamResult.finalText === 'string') {
+        aiResponse = streamResult.finalText;
+      }
+
+      if (!streamResult) {
+        throw new Error('[streamChat] 未返回有效结果');
+      }
+
+      clearInCallStreamingPlaceholder(streamRequestId);
+      updateInCallRequestLifecycle(streamRequestId, 'completed');
+
       if (videoCallState.isGroupCall) {
         const speechArray = parseAiResponse(aiResponse);
         speechArray.forEach(turn => {
@@ -25496,46 +27435,34 @@ ${linkedContents}
             timestamp: narrationTimestamp
           });
         }
-
-        // 显示每句对话
-        dialogues.forEach((msg, index) => {
-          const messageContent = msg.content;
-          const aiTimestamp = Date.now() + index + 1;
-
-          const aiBubble = document.createElement('div');
-          aiBubble.className = 'call-message-bubble ai-speech';
-          aiBubble.textContent = messageContent;
-          aiBubble.dataset.timestamp = aiTimestamp;
-          addLongPressListener(aiBubble, () => showCallMessageActions(aiTimestamp));
-          callFeed.appendChild(aiBubble);
-
-          videoCallState.callHistory.push({
-            role: 'assistant',
-            content: messageContent,
-            timestamp: aiTimestamp
-          });
-
-          // 为每句对话播放TTS
-          if (enableTts && voiceId) {
-            playVideoCallPureTTS(messageContent, voiceId);
-          }
-        });
-
-        // ================= 头像动画修复 =================
         const speakingAvatar = document.querySelector(`.participant-avatar-wrapper[data-participant-id="ai"] .participant-avatar`);
 
         if (speakingAvatar) {
           speakingAvatar.classList.add('speaking');
-          // 动态计算说话时长：基于所有对话的总长度
-          const totalLength = dialogues.reduce((sum, msg) => sum + (msg.content || '').length, 0);
-          const speakTime = Math.min(totalLength * 200, 5000);
+          const speakTime = Math.min(aiResponse.length * 200, 5000);
           setTimeout(() => speakingAvatar.classList.remove('speaking'), speakTime);
         }
       }
 
       callFeed.scrollTop = callFeed.scrollHeight;
+      pushInCallStreamDebug({
+        type: 'final-write',
+        requestId: streamRequestId,
+        length: aiResponse.length,
+        endState: streamProtocolMeta.endState,
+        fallbackUsed: streamProtocolMeta.fallbackUsed
+      });
 
     } catch (error) {
+      if (error.name === 'AbortError') {
+        updateInCallRequestLifecycle(streamRequestId, 'aborted');
+        clearInCallStreamingPlaceholder(streamRequestId);
+        return;
+      }
+      if (isInCallRequestCurrent(streamRequestId)) {
+        updateInCallRequestLifecycle(streamRequestId, 'errored');
+      }
+      clearInCallStreamingPlaceholder(streamRequestId);
       const errorBubble = document.createElement('div');
       errorBubble.className = 'call-message-bubble ai-speech';
       errorBubble.style.color = '#ff8a80';
@@ -25546,8 +27473,107 @@ ${linkedContents}
         role: 'assistant',
         content: `[ERROR: ${error.message}]`
       });
+      pushInCallStreamDebug({
+        type: 'caught-error',
+        requestId: streamRequestId,
+        message: error.message
+      });
     }
   }
+
+  window.__task9InCallTestHooks = {
+    resetDebug() {
+      window.__inCallStreamDebug = {
+        events: []
+      };
+    },
+    prepareScenario(customChat = {}) {
+      const chatId = customChat.id || '__task9_incall_chat__';
+      const defaultChat = {
+        id: chatId,
+        name: customChat.name || 'Task9测试角色',
+        isGroup: Boolean(customChat.isGroup),
+        members: customChat.members || [],
+        settings: {
+          aiPersona: '测试人设',
+          myPersona: '测试用户',
+          myNickname: '我',
+          linkedWorldBookIds: [],
+          enableTts: false,
+          minimaxVoiceId: '',
+          videoOptimization: {
+            enableRealCamera: false
+          },
+          aiAvatar: defaultAvatar,
+          myAvatar: defaultAvatar,
+          ...customChat.settings
+        },
+        longTermMemory: Array.isArray(customChat.longTermMemory) ? customChat.longTermMemory : [],
+        history: Array.isArray(customChat.history) ? customChat.history : []
+      };
+
+      state.chats[chatId] = {
+        ...defaultChat,
+        ...customChat,
+        settings: {
+          ...defaultChat.settings,
+          ...(customChat.settings || {})
+        }
+      };
+      state.activeChatId = chatId;
+
+      videoCallState.isActive = true;
+      videoCallState.isAwaitingResponse = false;
+      videoCallState.isGroupCall = Boolean(state.chats[chatId].isGroup);
+      videoCallState.activeChatId = chatId;
+      videoCallState.initiator = 'user';
+      videoCallState.startTime = Date.now();
+      videoCallState.isUserParticipating = true;
+      videoCallState.callHistory = [];
+      videoCallState.preCallContext = customChat.preCallContext || 'Task-9 通话链路验证';
+      videoCallState.participants = videoCallState.isGroupCall
+        ? (customChat.participants || [{
+          id: 'ai-member-1',
+          name: '成员A',
+          originalName: '成员A',
+          avatar: defaultAvatar
+        }])
+        : [];
+
+      const callFeed = document.getElementById('video-call-main');
+      if (callFeed) {
+        callFeed.innerHTML = '<em>测试通话已建立...</em>';
+      }
+
+      updateParticipantAvatars();
+      clearInCallStreamingPlaceholder();
+      inCallRequestLifecycle = {
+        requestId: null,
+        controller: null,
+        endState: 'idle',
+        updatedAt: Date.now()
+      };
+
+      return {
+        chatId,
+        isGroupCall: videoCallState.isGroupCall
+      };
+    },
+    async runAction(userInput = null) {
+      return triggerAiInCallAction(userInput);
+    },
+    getState() {
+      return {
+        lifecycle: {
+          ...inCallRequestLifecycle
+        },
+        callHistoryLength: videoCallState.callHistory.length,
+        debugEvents: (window.__inCallStreamDebug && Array.isArray(window.__inCallStreamDebug.events))
+          ? [...window.__inCallStreamDebug.events]
+          : []
+      };
+    }
+  };
 
 
 
@@ -32506,14 +34532,22 @@ ${formattedHistory}
       }
     }
 
-    if (migrationCount > 0) {
-      console.log(`数据迁移完成！总共修复了 ${migrationCount} 条红包记录。`);
-      alert(`检测到并成功修复了 ${migrationCount} 条旧的红包消息！页面将自动刷新以应用更改。`);
-      location.reload();
-    } else {
-      console.log("未发现需要迁移的旧红包数据。");
-    }
+  if (migrationCount > 0) {
+    console.log(`数据迁移完成！总共修复了 ${migrationCount} 条红包记录。`);
+    const summary = `检测到并成功修复了 ${migrationCount} 条旧的红包消息！\n\n迁移完成后不会自动刷新页面。您可以稍后手动刷新，或点击“立即刷新”以立即同步。`;
+    await showCustomAlert("旧红包迁移完成", summary);
+    await requestReload({
+      reason: 'legacy-redpacket-migration',
+      needConfirm: true,
+      confirmHandler: () => showCustomConfirm(
+        "是否立即刷新？",
+        "迁移后的数据已准备就绪。页面不会自动刷新，如需立即应用更改，请刷新，否则稍后手动刷新也可以。"
+      )
+    });
+  } else {
+    console.log("未发现需要迁移的旧红包数据。");
   }
+}
 
   // USER状态修改弹窗 - 直接输入框
   async function showUserStatusModal(chatId) {
@@ -51101,13 +53135,17 @@ ${internalMonologueBuilder}
       return;
     }
 
-
     const userInput = document.getElementById('werewolf-user-input');
     const speech = userInput.value.trim();
+    const waitReplyBtn = document.getElementById('werewolf-wait-reply-btn');
 
     if (!speech) {
       alert("请先输入你的发言内容。");
       return;
+    }
+
+    if (waitReplyBtn) {
+      waitReplyBtn.disabled = true;
     }
 
     addDialogueLog(myPlayer.name, speech);
@@ -51122,6 +53160,9 @@ ${internalMonologueBuilder}
       model
     } = state.apiConfig;
     if (!proxyUrl || !apiKey || !model) {
+      if (waitReplyBtn) {
+        waitReplyBtn.disabled = false;
+      }
       alert('API未配置，无法生成对话。');
       return;
     }
@@ -51136,112 +53177,35 @@ ${internalMonologueBuilder}
       }];
       let geminiConfig = toGeminiRequestData(model, apiKey, systemPrompt, messagesForApi);
 
-      const response = isGemini ?
-        await fetch(geminiConfig.url, geminiConfig.data) :
-        await fetch(`${proxyUrl}/v1/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
-          },
-          body: JSON.stringify({
-            model: model,
-            messages: [{
-              role: 'system',
-              content: systemPrompt
-            }, ...messagesForApi],
-            temperature: state.globalSettings.apiTemperature || 0.9,
-          })
-        });
+      const streamResult = await runFeatureTextStreamRequest({
+        lifecycle: werewolfRequestLifecycle,
+        entry: 'werewolf-wait-reply',
+        proxyUrl,
+        apiKey,
+        model,
+        systemPrompt,
+        messagesPayload: messagesForApi,
+        isGemini,
+        geminiConfig,
+        streamEnabled: true,
+        fallbackEnabled: true
+      });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`API 错误: ${errorData.error.message}`);
+      if (streamResult.ignored) {
+        return;
       }
 
-      const data = await response.json();
-      const aiResponseContent = getGeminiResponseText(data);
+      const aiResponseContent = String(streamResult.finalText || '');
+      let cleanedJsonString = aiResponseContent.replace(/^```json\s*/, '').replace(/```$/, '').trim();
+      const startIndex = cleanedJsonString.indexOf('[');
+      const endIndex = cleanedJsonString.lastIndexOf(']');
 
-
-
-      let dialogues;
-      try {
-
-        let cleanedJsonString = aiResponseContent.replace(/^```json\s*/, '').replace(/```$/, '').trim();
-        const startIndex = cleanedJsonString.indexOf('[');
-        const endIndex = cleanedJsonString.lastIndexOf(']');
-
-        if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) {
-          throw new Error("AI返回的内容中未找到有效的JSON数组结构 (`[...]`)。");
-        }
-
-        const jsonArrayString = cleanedJsonString.substring(startIndex, endIndex + 1);
-
-
-        dialogues = JSON.parse(jsonArrayString);
-
-      } catch (e) {
-
-        if (e.message.includes("Bad control character")) {
-          console.warn("检测到JSON中的非法控制字符，尝试清理并重试...");
-
-
-          const sanitizeJsonString = (str) => {
-            let inString = false;
-            let escaped = false;
-            let result = '';
-            for (let i = 0; i < str.length; i++) {
-              const char = str[i];
-
-              if (escaped) {
-                result += char;
-                escaped = false;
-                continue;
-              }
-              if (char === '\\') {
-                result += char;
-                escaped = true;
-                continue;
-              }
-              if (char === '"') {
-                result += char;
-                inString = !inString;
-                continue;
-              }
-
-              if (inString) {
-
-                if (char === '\n') result += '\\n';
-                else if (char === '\r') result += '\\r';
-                else if (char === '\t') result += '\\t';
-
-                else if (char.charCodeAt(0) < 32) continue;
-                else result += char;
-              } else {
-
-                result += char;
-              }
-            }
-            return result;
-          };
-
-
-          let cleanedJsonString = aiResponseContent.replace(/^```json\s*/, '').replace(/```$/, '').trim();
-
-
-          const sanitizedString = sanitizeJsonString(cleanedJsonString);
-
-          const jsonMatch = sanitizedString.match(/(\[[\s\S]*\])/);
-          if (!jsonMatch) throw new Error("清理后仍未找到JSON数组。");
-
-          dialogues = JSON.parse(jsonMatch[0]);
-
-        } else {
-
-          throw new Error(`解析AI返回的JSON时出错: ${e.message}\n\nAI原始返回内容:\n${aiResponseContent}`);
-        }
+      if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) {
+        throw new Error("AI返回的内容中未找到有效的JSON数组结构 (`[...]`)。");
       }
 
+      const jsonArrayString = cleanedJsonString.substring(startIndex, endIndex + 1);
+      const dialogues = JSON.parse(jsonArrayString);
 
       for (const dialogue of dialogues) {
         if (dialogue.speaker_name && dialogue.dialogue) {
@@ -51250,9 +53214,37 @@ ${internalMonologueBuilder}
           await new Promise(resolve => setTimeout(resolve, 1500 + Math.random() * 2000));
         }
       }
+
+      pushTask10Evidence('werewolf', {
+        entry: 'wait-reply',
+        action: 'click-werewolf-wait-reply-btn',
+        requestId: streamResult.requestId,
+        endState: streamResult.endState,
+        fallbackUsed: streamResult.fallbackUsed,
+        streamEnabled: streamResult.streamEnabled,
+        controlledDegrade: Boolean(streamResult.fallbackUsed),
+        currentPhase: werewolfGameState.currentPhase,
+        currentDay: werewolfGameState.currentDay,
+        discussionCount: werewolfGameState.discussionLog.length,
+        aliveCount: werewolfGameState.players.filter(p => p.isAlive).length
+      });
     } catch (error) {
       console.error("狼人杀AI回应生成失败:", error);
+      pushTask10Evidence('werewolf', {
+        entry: 'wait-reply',
+        action: 'click-werewolf-wait-reply-btn',
+        endState: 'errored',
+        controlledDegrade: true,
+        errorMessage: error && error.message ? error.message : String(error),
+        currentPhase: werewolfGameState.currentPhase,
+        currentDay: werewolfGameState.currentDay,
+        discussionCount: werewolfGameState.discussionLog.length
+      });
       await showCustomAlert("AI 发言失败", `错误: ${error.message}`);
+    } finally {
+      if (waitReplyBtn) {
+        waitReplyBtn.disabled = false;
+      }
     }
   }
 
@@ -54636,15 +56628,26 @@ ${recentHistoryContext}
 
       // 检查是否为高级导出文件
       if (data.exportType !== 'advanced' || !data.data || !data.categories) {
+        pendingImportSampleHint = 'unknown';
         await showCustomAlert('文件格式错误', '这不是一个有效的高级导出文件。请使用"导入备份文件"功能导入普通备份。');
         return;
       }
+
+      pendingImportSampleHint = file?.name || 'unknown';
+      logImportObservability('log', {
+        entryPath: 'advanced',
+        sampleHint: pendingImportSampleHint,
+        stage: 'precheck',
+        skippedCount: 0,
+        failedCount: 0
+      });
 
       // 显示导入确认界面
       await showAdvancedImportConfirmModal(data);
 
     } catch (error) {
       console.error("读取高级导出文件时出错:", error);
+      pendingImportSampleHint = 'unknown';
       await showCustomAlert('导入失败', `文件解析失败: ${error.message}`);
     }
   }
@@ -54742,6 +56745,7 @@ ${recentHistoryContext}
 
     // 取消
     document.getElementById('cancel-advanced-import').addEventListener('click', () => {
+      pendingImportSampleHint = 'unknown';
       document.body.removeChild(modalContainer);
     });
 
@@ -54754,6 +56758,7 @@ ${recentHistoryContext}
     // 点击背景关闭
     modal.addEventListener('click', (e) => {
       if (e.target === modal) {
+        pendingImportSampleHint = 'unknown';
         document.body.removeChild(modalContainer);
       }
     });
@@ -54763,48 +56768,103 @@ ${recentHistoryContext}
   async function executeAdvancedImport(data) {
     await showCustomAlert("正在导入...", "正在将数据写入数据库，请稍候...");
 
+    const knownTableNames = new Set(db.tables.map(table => table.name));
+    let importedTables = 0;
+    let importedRecords = 0;
+    const skippedUnknownTables = [];
+    const failedTableErrors = [];
+
+    const createAuditError = (message) => {
+      const importAuditSummary = buildImportAuditSummary({
+        importedTables,
+        importedRecords,
+        skippedUnknownTables,
+        failedTableErrors
+      });
+
+      const auditedError = new Error(message);
+      auditedError.importAuditSummary = importAuditSummary;
+      return auditedError;
+    };
+
     try {
-      let importedTables = 0;
-      let importedRecords = 0;
-
       for (const tableName in data) {
-        if (db[tableName]) {
-          const tableData = data[tableName];
-          if (Array.isArray(tableData) && tableData.length > 0) {
-            // 使用 bulkPut 来合并数据（如果有主键冲突会覆盖）
-            await db.table(tableName).bulkPut(tableData);
-            importedTables++;
-            importedRecords += tableData.length;
-            console.log(`已导入表 ${tableName}: ${tableData.length} 条记录`);
+        const tableData = data[tableName];
+        if (!knownTableNames.has(tableName)) {
+          if (!skippedUnknownTables.includes(tableName)) {
+            skippedUnknownTables.push(tableName);
           }
-        } else {
-          console.warn(`表 ${tableName} 不存在于当前数据库中，跳过`);
+          console.warn(`[高级导入] 表 ${tableName} 不存在于当前数据库中，跳过`);
+          continue;
+        }
+
+        if (!Array.isArray(tableData)) {
+          const reason = `表 ${tableName} 数据格式无效（预期数组）`;
+          failedTableErrors.push(reason);
+          throw createAuditError(reason);
+        }
+
+        if (tableData.length === 0) {
+          continue;
+        }
+
+        try {
+          // 使用 bulkPut 来合并数据（如果有主键冲突会覆盖）
+          await db.table(tableName).bulkPut(tableData);
+          importedTables++;
+          importedRecords += tableData.length;
+          console.log(`已导入表 ${tableName}: ${tableData.length} 条记录`);
+        } catch (error) {
+          const reason = `表 ${tableName} 写入失败: ${error.message}`;
+          failedTableErrors.push(reason);
+          throw createAuditError(reason);
         }
       }
 
-      // 导入成功，询问用户是否刷新页面
-      const shouldRefresh = await showCustomConfirm(
-        '导入成功',
-        `已成功导入 ${importedTables} 个数据表，共 ${importedRecords} 条记录！<br><br>是否立即刷新页面以使数据生效？<br><span style="color: #666; font-size: 14px;">（点击"取消"可以继续进行其他操作）</span>`,
-        {
-          confirmText: '立即刷新',
-          cancelText: '稍后刷新'
-        }
-      );
+      const importAuditSummary = buildImportAuditSummary({
+        importedTables,
+        importedRecords,
+        skippedUnknownTables,
+        failedTableErrors
+      });
 
-      if (shouldRefresh) {
-        // 用户选择刷新页面
-        location.reload();
-      } else {
-        // 用户选择不刷新，尝试局部刷新界面
-        if (typeof loadChats === 'function') {
-          loadChats();
-        }
-      }
+      logImportObservability('log', {
+        entryPath: 'advanced',
+        sampleHint: pendingImportSampleHint,
+        stage: 'complete',
+        skippedCount: importAuditSummary.skippedUnknownTables.length,
+        failedCount: importAuditSummary.failedTableErrors.length
+      });
+
+      await promptReloadChoice({
+        reason: 'advanced-import',
+        alertTitle: '导入成功',
+        alertMessage: buildImportSuccessAlertMessage('高级导入（合并）已完成。', importAuditSummary),
+        confirmTitle: '立即刷新以应用导入？',
+        confirmMessage: '高级导入完成后不会自动刷新。点击“立即刷新”即可应用更改，或稍后手动刷新。'
+      });
 
     } catch (error) {
-      console.error("高级导入数据时出错:", error);
-      await showCustomAlert('导入失败', `发生了一个错误: ${error.message}`);
+      const importAuditSummary = error?.importAuditSummary || buildImportAuditSummary({
+        importedTables,
+        importedRecords,
+        skippedUnknownTables,
+        failedTableErrors: failedTableErrors.length > 0 ? failedTableErrors : [error.message]
+      });
+      logImportObservability('error', {
+        entryPath: 'advanced',
+        sampleHint: pendingImportSampleHint,
+        stage: 'fail',
+        skippedCount: importAuditSummary.skippedUnknownTables.length,
+        failedCount: importAuditSummary.failedTableErrors.length
+      });
+      console.error("高级导入数据时出错:", {
+        error,
+        importAuditSummary
+      });
+      await showCustomAlert('导入失败', buildImportFailureAlertMessage('高级导入', error.message, importAuditSummary));
+    } finally {
+      pendingImportSampleHint = 'unknown';
     }
   }
 
@@ -58932,6 +60992,7 @@ ${stickerList}
     const modalBody = document.getElementById('custom-modal-body');
     const confirmBtn = document.getElementById('custom-modal-confirm');
     const cancelBtn = document.getElementById('custom-modal-cancel');
+    const githubSampleHint = pendingImportSampleHint !== 'unknown' ? pendingImportSampleHint : 'github:selected-backup';
 
     const showProgress = (text) => {
       const modal = document.getElementById('custom-modal-overlay');
@@ -59020,14 +61081,6 @@ ${stickerList}
 
       showProgress("正在下载并恢复数据...");
 
-      // 4. 清空数据库 (一次性清空，避免分片恢复时数据冲突)
-      await db.transaction('rw', db.tables, async () => {
-        for (const table of db.tables) {
-          await table.clear();
-        }
-      });
-
-      // 5. 定义下载和处理单个文件的逻辑
       const processFile = async (filePath) => {
         let url = `https://api.github.com/repos/${username}/${repo}/contents/${filePath}`;
         if (state.apiConfig.githubProxyEnable && state.apiConfig.githubProxyUrl) {
@@ -59042,49 +61095,123 @@ ${stickerList}
         let json;
         const isGzipped = filePath.endsWith('.gz');
 
-        if (isGzipped && typeof pako !== 'undefined') {
-          // 处理 gzip 压缩的分片
-          const arrayBuffer = await res.arrayBuffer();
-          const decompressed = pako.ungzip(new Uint8Array(arrayBuffer), { to: 'string' });
-          json = JSON.parse(decompressed);
-        } else {
-          const text = await res.text();
-          try {
-            json = JSON.parse(text);
-          } catch (e) {
-            // 尝试 Base64 解码 (兼容旧逻辑)
-            const decoded = decodeURIComponent(escape(window.atob(text.replace(/\s/g, ''))));
-            json = JSON.parse(decoded);
+        try {
+          if (isGzipped) {
+            if (typeof pako === 'undefined') {
+              throw new Error('当前环境不支持 gzip 解压');
+            }
+            const arrayBuffer = await res.arrayBuffer();
+            const decompressed = pako.ungzip(new Uint8Array(arrayBuffer), { to: 'string' });
+            json = JSON.parse(decompressed);
+          } else {
+            const text = await res.text();
+            try {
+              json = JSON.parse(text);
+            } catch (e) {
+              const decoded = decodeURIComponent(escape(window.atob(text.replace(/\s/g, ''))));
+              json = JSON.parse(decoded);
+            }
           }
+        } catch (error) {
+          throw new Error(`备份分片解析失败: ${filePath} (${error.message})`);
         }
 
-        // 核心：根据格式决定如何导入
         const dataPart = json.data || json; // 兼容 {version:.., data:{...}} 和 直接 {...}
 
-        // 写入数据库
+        if (!dataPart || typeof dataPart !== 'object') {
+          throw new Error(`备份分片格式无效: ${filePath}`);
+        }
+
+        return dataPart;
+      };
+
+      const mergedBackupData = {};
+      const mergeDataPart = (dataPart) => {
         for (const tableName of Object.keys(dataPart)) {
           const records = dataPart[tableName];
+          if (!Array.isArray(records) || records.length === 0) continue;
+          if (!Array.isArray(mergedBackupData[tableName])) {
+            mergedBackupData[tableName] = [];
+          }
+          mergedBackupData[tableName].push(...records);
+        }
+      };
+
+      if (targetSet.type === 'multipart') {
+        targetSet.parts.sort((a, b) => a.num - b.num);
+        const partNumberSet = new Set(targetSet.parts.map(part => part.num));
+        if (partNumberSet.size !== targetSet.parts.length) {
+          throw new Error('GitHub恢复分片编号重复（数据库未清空）');
+        }
+        const maxPartNumber = targetSet.parts[targetSet.parts.length - 1].num;
+        const missingPartNumbers = [];
+        for (let expected = 1; expected <= maxPartNumber; expected++) {
+          if (!partNumberSet.has(expected)) {
+            missingPartNumbers.push(expected);
+          }
+        }
+        if (missingPartNumbers.length > 0) {
+          throw new Error(`GitHub恢复分片缺失（数据库未清空）: 缺少 part${missingPartNumbers.join(', part')}`);
+        }
+        for (let i = 0; i < targetSet.parts.length; i++) {
+          const part = targetSet.parts[i];
+          modalBody.innerHTML = `<div class="spinner"></div><p style="text-align:center;">正在处理分片 ${i + 1}/${targetSet.parts.length}...</p>`;
+          const dataPart = await processFile(part.path);
+          mergeDataPart(dataPart);
+          await new Promise(r => setTimeout(r, 50));
+        }
+      } else {
+        const dataPart = await processFile(targetSet.path);
+        mergeDataPart(dataPart);
+      }
+
+      const compatibilityPrecheck = precheckGitHubRestoreCompatibility(mergedBackupData);
+      console.log('[GitHub恢复][预检结果]', compatibilityPrecheck);
+      logImportObservability('log', {
+        entryPath: 'github',
+        sampleHint: githubSampleHint,
+        stage: 'precheck',
+        skippedCount: compatibilityPrecheck.skippedUnknownTables.length,
+        failedCount: compatibilityPrecheck.blockingErrors.length
+      });
+      if (compatibilityPrecheck.skippedUnknownTables.length > 0) {
+        console.warn(`[GitHub恢复] 发现未知表，已跳过: ${compatibilityPrecheck.skippedUnknownTables.join(', ')}`);
+      }
+      if (compatibilityPrecheck.blockingErrors.length > 0) {
+        throw new Error(`GitHub恢复预检失败（数据库未清空）: ${compatibilityPrecheck.blockingErrors.join('；')}`);
+      }
+
+      await db.transaction('rw', db.tables, async () => {
+        for (const table of db.tables) {
+          await table.clear();
+        }
+
+        for (const tableName of compatibilityPrecheck.knownTablesToImport) {
+          const records = mergedBackupData[tableName];
           if (Array.isArray(records) && records.length > 0) {
             await db.table(tableName).bulkPut(records);
           }
         }
-      };
+      });
 
-      // 6. 执行恢复
-      if (targetSet.type === 'multipart') {
-        targetSet.parts.sort((a, b) => a.num - b.num);
-        for (let i = 0; i < targetSet.parts.length; i++) {
-          const part = targetSet.parts[i];
-          modalBody.innerHTML = `<div class="spinner"></div><p style="text-align:center;">正在处理分片 ${i + 1}/${targetSet.parts.length}...</p>`;
-          await processFile(part.path);
-          // 强制垃圾回收建议（通过断开引用）
-          await new Promise(r => setTimeout(r, 50));
-        }
-      } else {
-        await processFile(targetSet.path);
-      }
+      const importedRecords = compatibilityPrecheck.knownTablesToImport.reduce((sum, tableName) => {
+        const records = mergedBackupData[tableName];
+        return sum + (Array.isArray(records) ? records.length : 0);
+      }, 0);
+      const importAuditSummary = buildImportAuditSummary({
+        importedTables: compatibilityPrecheck.knownTablesToImport.length,
+        importedRecords,
+        skippedUnknownTables: compatibilityPrecheck.skippedUnknownTables,
+        failedTableErrors: []
+      });
+      logImportObservability('log', {
+        entryPath: 'github',
+        sampleHint: githubSampleHint,
+        stage: 'complete',
+        skippedCount: importAuditSummary.skippedUnknownTables.length,
+        failedCount: importAuditSummary.failedTableErrors.length
+      });
 
-      // 7. 恢复 API 配置 (防止覆盖后丢失 Key)
       try {
         const restoredApiConfig = await db.apiConfig.get('main');
         if (restoredApiConfig) {
@@ -59092,19 +61219,38 @@ ${stickerList}
           if (restoredApiConfig.imgbbEnable !== undefined) localStorage.setItem('imgbb-enabled', restoredApiConfig.imgbbEnable);
           if (restoredApiConfig.minimaxApiKey) localStorage.setItem('minimax-api-key', restoredApiConfig.minimaxApiKey);
           if (restoredApiConfig.minimaxGroupId) localStorage.setItem('minimax-group-id', restoredApiConfig.minimaxGroupId);
-          // 恢复 GitHub 配置，否则下次无法备份
           if (restoredApiConfig.githubToken) state.apiConfig.githubToken = restoredApiConfig.githubToken;
         }
       } catch (e) { }
 
       confirmBtn.style.display = '';
-      await showCustomAlert("恢复成功", "所有分片已处理完毕，数据已恢复！点击确定刷新页面。");
-      setTimeout(() => window.location.reload(), 500);
+      await promptReloadChoice({
+        reason: 'multi-part-restore',
+        alertTitle: '恢复成功',
+        alertMessage: buildImportSuccessAlertMessage('所有分片已处理完毕，数据已恢复！', importAuditSummary),
+        confirmTitle: '立即刷新以应用恢复？',
+        confirmMessage: '恢复完成后不会自动刷新，点击“立即刷新”即可应用备份内容。'
+      });
 
     } catch (error) {
       console.error(error);
       confirmBtn.style.display = '';
-      await showCustomAlert("恢复失败", error.message);
+      const importAuditSummary = buildImportAuditSummary({
+        importedTables: 0,
+        importedRecords: 0,
+        skippedUnknownTables: [],
+        failedTableErrors: [error.message]
+      });
+      logImportObservability('error', {
+        entryPath: 'github',
+        sampleHint: githubSampleHint,
+        stage: 'fail',
+        skippedCount: importAuditSummary.skippedUnknownTables.length,
+        failedCount: importAuditSummary.failedTableErrors.length
+      });
+      await showCustomAlert("恢复失败", buildImportFailureAlertMessage('GitHub恢复', error.message, importAuditSummary));
+    } finally {
+      pendingImportSampleHint = 'unknown';
     }
   }
   let backupIntervalId = null;
@@ -64228,11 +66374,16 @@ ${email.content}
       // 2. 清空 LocalStorage (包括主题、语言、未读计数、临时缓存等，也包括联机设置)
       localStorage.clear();
 
-      // 3. 强制刷新页面
-      // 延迟一下让用户看到提示，然后刷新重载整个应用
-      setTimeout(() => {
-        window.location.reload(true);
-      }, 1000);
+      await promptReloadChoice({
+        reason: 'factory-reset',
+        alertTitle: '初始化完成',
+        alertMessage: '所有数据已清空，应用不会自动刷新。点击“立即刷新”即可重启应用，也可以稍后手动刷新。',
+        confirmTitle: '是否立即刷新？',
+        confirmMessage: '重置后不会自动刷新，点击“立即刷新”即可立刻重新加载本地数据，或稍后手动刷新。',
+        confirmText: '立即刷新',
+        cancelText: '稍后刷新',
+        requestOptions: { forceReload: true }
+      });
 
     } catch (error) {
       console.error("初始化失败:", error);
@@ -65712,6 +67863,25 @@ ${recentHistoryWithUser}
     window.renderApiSettingsProxy = renderApiSettings;
     window.renderWallpaperScreenProxy = renderWallpaperScreen;
     window.renderWorldBookScreenProxy = renderWorldBookScreen;
+    window.__task10Hooks = {
+      setupDrawAndGuessSession,
+      handleGetTopicFromAi,
+      triggerDrawAndGuessAiResponse,
+      handleWerewolfWaitReply,
+      renderWerewolfScreen,
+      getEvidence: () => ensureTask10EvidenceStore()
+    };
+    window.__task11Hooks = {
+      triggerMainAiResponse: triggerAiResponse,
+      getEvidence: () => ensureTask11EvidenceStore(),
+      pushEvidence: (channel, payload) => pushTask11Evidence(channel, payload)
+    };
+    window.__task10State = {
+      drawGuessState,
+      werewolfGameState,
+      drawGuessRequestLifecycle,
+      werewolfRequestLifecycle
+    };
 
     await loadAllDataFromDB();
     await initFunds();
@@ -66736,6 +68906,14 @@ ${recentHistoryWithUser}
       state.globalSettings.chatRenderWindow = parseInt(document.getElementById('chat-render-window-input').value) || 50;
       state.globalSettings.chatListRenderWindow = parseInt(document.getElementById('chat-list-render-window-input').value) || 30;
       state.globalSettings.apiTemperature = parseFloat(document.getElementById('api-temperature-slider').value);
+      const streamingSwitch = document.getElementById('api-streaming-switch');
+      if (streamingSwitch) {
+        state.globalSettings.streamEnabled = streamingSwitch.checked;
+      }
+      const fallbackSwitch = document.getElementById('api-streaming-fallback-switch');
+      if (fallbackSwitch) {
+        state.globalSettings.fallbackEnabled = fallbackSwitch.checked;
+      }
       
       // 方案4：保存API历史记录开关状态
       const apiHistorySwitch = document.getElementById('enable-api-history-switch');
@@ -66888,13 +69066,10 @@ ${recentHistoryWithUser}
       }
     });
 
-    // 监听后台模型下拉框变化，自动填入手写框
-    document.getElementById('background-model-select').addEventListener('change', (e) => {
-      const selectedModel = e.target.value;
-      if (selectedModel) {
-        document.getElementById('background-model-input').value = selectedModel;
-      }
-    });
+    const streamingSwitchControl = document.getElementById('api-streaming-switch');
+    if (streamingSwitchControl) {
+      streamingSwitchControl.addEventListener('change', syncStreamingSettingsUiState);
+    }
 
     // ========== 移动端控制台功能 ==========
     (function () {
@@ -78167,17 +80342,28 @@ ${linkedContents}
       let geminiConfig = toGeminiRequestData(model, apiKey, systemPrompt, messagesForApi);
 
       try {
-        const response = isGemini
-          ? await fetch(geminiConfig.url, geminiConfig.data)
-          : await fetch(`${proxyUrl}/v1/chat/completions`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-            body: JSON.stringify({ model, messages: [{ role: 'system', content: systemPrompt }, ...messagesForApi] })
-          });
+        const streamResult = await runFeatureTextStreamRequest({
+          lifecycle: drawGuessRequestLifecycle,
+          entry: 'draw-guess-topic',
+          proxyUrl,
+          apiKey,
+          model,
+          systemPrompt,
+          messagesPayload: messagesForApi,
+          isGemini,
+          geminiConfig,
+          streamEnabled: true,
+          fallbackEnabled: true
+        });
 
-        if (!response.ok) throw new Error(`API 错误: ${response.statusText}`);
-        const data = await response.json();
-        const aiTopic = getGeminiResponseText(data);
+        if (streamResult.ignored) {
+          return;
+        }
+
+        const aiTopic = String(streamResult.finalText || '').trim();
+        if (!aiTopic) {
+          throw new Error('AI返回为空，无法出题。');
+        }
 
         // 处理回复（线上模式支持多条消息）
         if (drawGuessState.mode === 'online') {
@@ -78204,8 +80390,26 @@ ${linkedContents}
           appendDrawGuessMessage(aiMessage);
         }
 
+        pushTask10Evidence('drawGuess', {
+          entry: 'topic',
+          mode: drawGuessState.mode,
+          requestId: streamResult.requestId,
+          endState: streamResult.endState,
+          fallbackUsed: streamResult.fallbackUsed,
+          streamEnabled: streamResult.streamEnabled,
+          controlledDegrade: Boolean(streamResult.fallbackUsed),
+          sampleLengths: drawGuessState.history.slice(-3).map(msg => String(msg.content || '').length)
+        });
+
       } catch (error) {
         console.error("AI出题失败:", error);
+        pushTask10Evidence('drawGuess', {
+          entry: 'topic',
+          mode: drawGuessState.mode,
+          endState: 'errored',
+          controlledDegrade: true,
+          errorMessage: error && error.message ? error.message : String(error)
+        });
         await showCustomAlert("出题失败", `无法获取题目: ${error.message}`);
       }
     }
@@ -78217,6 +80421,7 @@ ${linkedContents}
       if (drawGuessState.isAiResponding || !drawGuessState.isActive || !drawGuessState.partnerId) return;
 
       drawGuessState.isAiResponding = true;
+      let draftParagraph = null;
 
       const dialogueBox = document.getElementById('draw-guess-dialogue-box');
       if (dialogueBox.childElementCount === 0) {
@@ -78229,31 +80434,23 @@ ${linkedContents}
 
         const chat = state.chats[drawGuessState.partnerId];
         const userNickname = chat.settings.myNickname || '我';
-
-        // 构建更完整的上下文信息
-
-        // 1. 双方人设
         const aiPersona = chat.settings.aiPersona || '一个友好的对话伙伴';
         const myPersona = chat.settings.myPersona || '用户';
 
-        // 2. 世界书
         const worldBookContext = (chat.settings.linkedWorldBookIds || []).map(bookId =>
           state.worldBooks.find(wb => wb.id === bookId)
         ).filter(Boolean).map(book =>
           `## 世界书《${book.name}》设定:\n${book.content.filter(e => e.enabled).map(e => `- ${e.content}`).join('\n')}`
         ).join('\n');
 
-        // 3. 长期记忆
         const longTermMemory = chat.longTermMemory && chat.longTermMemory.length > 0
           ? chat.longTermMemory.map(mem => `- ${mem.content}`).join('\n')
           : '';
 
-        // 4. 短期记忆（主聊天最近的对话）
         const shortTermMemory = chat.history.slice(-15).map(msg =>
           `${msg.role === 'user' ? userNickname : chat.name}: ${String(msg.content)}`
         ).join('\n');
 
-        // 5. 挂载的聊天记录
         let linkedChatsContext = '';
         if (chat.settings.linkedChatIds && chat.settings.linkedChatIds.length > 0) {
           const linkedMemories = [];
@@ -78269,15 +80466,11 @@ ${linkedContents}
           linkedChatsContext = linkedMemories.join('\n');
         }
 
-        // 6. 游戏内对话历史
         const drawGuessHistory = drawGuessState.history.map(msg => `${msg.sender}: ${msg.content}`).join('\n');
-
         const canvasContentDescription = imageBase64 ? "(用户刚刚画完了一幅画，图片内容如下，请你猜测。)" : "(当前画板为空)";
-
         let systemPrompt;
 
         if (drawGuessState.mode === 'online') {
-          // 线上模式：无线下描写，支持多条消息
           let finalInstruction;
           if (isInitial) {
             finalInstruction = '这是你们第一次在线上打开这个游戏。请你主动说几句话，比如打个招呼、表达对游戏的期待、或者提议游戏规则。';
@@ -78302,23 +80495,12 @@ ${linkedContents}
 # 【对话节奏铁律（至关重要！）】
 你的回复【必须】模拟真人在线聊天的打字习惯。**绝对不要一次性发送一大段文字！** 你应该将你想说的话，拆分成【多条、简短的】消息来发送，每条消息最好不要超过30个字。这会让对话看起来更自然、更真实。
 
-举例：
-- ❌ 错误："哇！你画的这个真有意思，让我想想...这个圆圆的形状，还有上面的小点，会不会是一个苹果？不对，感觉更像是一个太阳呢！"
-- ✅ 正确：
-  消息1: "哇！你画的这个真有意思"
-  消息2: "让我想想..."
-  消息3: "这个圆圆的形状"
-  消息4: "还有上面的小点"
-  消息5: "会不会是一个苹果？"
-  消息6: "不对，感觉更像是一个太阳呢！"
-
 # 核心规则
 1. **【线上场景】**: 你们在线上聊天，不在同一个地点。【禁止】出现任何线下见面的描写，如"走过来"、"拿起笔"、"看向你"等动作描述。
 2. **【纯文字交流】**: 你只能通过文字表达，可以使用语气词、表情符号，但不能描述肢体动作或表情。
 3. **【多条消息】**: 你的回复应该自然地拆分成多条消息，就像真人在线聊天时的节奏。
 
 # 供你参考的上下文
-
 ## 世界观设定
 ${worldBookContext || '（暂无）'}
 
@@ -78337,7 +80519,6 @@ ${finalInstruction}
 
 请直接回复你想说的内容，将你的话自然地分成多条消息。每条消息之间用换行符（\n）分隔。不要加任何JSON格式或前缀后缀。`;
         } else {
-          // 线下模式：保留原有的提示词（有线下描写）
           let finalInstruction;
           if (isInitial) {
             finalInstruction = '这是你们第一次打开这个游戏。请你主动说几句话，比如打个招呼、表达对游戏的期待、或者制定游戏规则，来开启这场游戏。';
@@ -78360,7 +80541,6 @@ ${finalInstruction}
 画板内容: ${canvasContentDescription}
 
 # 供你参考的上下文
-
 ## 世界观设定
 ${worldBookContext || '（暂无）'}
 
@@ -78387,23 +80567,54 @@ ${finalInstruction}
         let isGemini = proxyUrl.includes('generativelanguage');
         let geminiConfig = toGeminiRequestData(model, apiKey, systemPrompt, messagesForApi);
 
-        const response = isGemini
-          ? await fetch(geminiConfig.url, geminiConfig.data)
-          : await fetch(`${proxyUrl}/v1/chat/completions`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-            body: JSON.stringify({ model, messages: [{ role: 'system', content: systemPrompt }, ...messagesForApi] })
-          });
+        const streamResult = await runFeatureTextStreamRequest({
+          lifecycle: drawGuessRequestLifecycle,
+          entry: imageBase64 ? 'draw-guess-reply-image' : 'draw-guess-reply-text',
+          proxyUrl,
+          apiKey,
+          model,
+          systemPrompt,
+          messagesPayload: messagesForApi,
+          isGemini,
+          geminiConfig,
+          streamEnabled: true,
+          fallbackEnabled: true,
+          onDeltaText: (_delta, fullText) => {
+            if (drawGuessState.mode !== 'online') return;
+            const previewLines = String(fullText || '').split('\n').filter(line => line.trim());
+            const previewText = previewLines[previewLines.length - 1] || String(fullText || '').trim();
+            if (!previewText) return;
 
-        if (!response.ok) throw new Error(`API 错误: ${response.statusText}`);
-        const data = await response.json();
-        const aiReply = getGeminiResponseText(data);
+            if (!draftParagraph) {
+              draftParagraph = appendDrawGuessMessage({
+                sender: chat.name,
+                content: `${previewText}▍`,
+                timestamp: Date.now() + 1
+              });
+              if (draftParagraph) draftParagraph.dataset.streaming = '1';
+            } else {
+              draftParagraph.textContent = `${chat.name}: ${previewText}▍`;
+            }
+          }
+        });
 
-        // 处理AI回复
+        if (streamResult.ignored) {
+          if (draftParagraph && draftParagraph.parentNode) draftParagraph.parentNode.removeChild(draftParagraph);
+          return;
+        }
+
+        const aiReply = String(streamResult.finalText || '').trim();
+        if (!aiReply) {
+          throw new Error('AI返回为空，无法继续回复。');
+        }
+
+        if (draftParagraph && draftParagraph.parentNode) {
+          draftParagraph.parentNode.removeChild(draftParagraph);
+          draftParagraph = null;
+        }
+
         if (drawGuessState.mode === 'online') {
-          // 线上模式：拆分成多条消息
           const messages = aiReply.split('\n').filter(msg => msg.trim());
-
           for (const msgContent of messages) {
             const aiMessage = {
               sender: chat.name,
@@ -78412,14 +80623,11 @@ ${finalInstruction}
             };
             drawGuessState.history.push(aiMessage);
             appendDrawGuessMessage(aiMessage);
-
-            // 添加短暂延迟，模拟打字效果
             if (messages.length > 1) {
               await new Promise(resolve => setTimeout(resolve, 300));
             }
           }
         } else {
-          // 线下模式：保持原有逻辑（单条消息）
           const aiMessage = {
             sender: chat.name,
             content: aiReply,
@@ -78429,8 +80637,29 @@ ${finalInstruction}
           appendDrawGuessMessage(aiMessage);
         }
 
+        pushTask10Evidence('drawGuess', {
+          entry: isInitial ? 'reply-initial' : (imageBase64 ? 'reply-image' : 'reply-text'),
+          mode: drawGuessState.mode,
+          requestId: streamResult.requestId,
+          endState: streamResult.endState,
+          fallbackUsed: streamResult.fallbackUsed,
+          streamEnabled: streamResult.streamEnabled,
+          controlledDegrade: Boolean(streamResult.fallbackUsed),
+          sampleLengths: drawGuessState.history.slice(-4).map(msg => String(msg.content || '').length)
+        });
+
       } catch (error) {
         console.error("AI响应失败:", error);
+        if (draftParagraph && draftParagraph.parentNode) {
+          draftParagraph.parentNode.removeChild(draftParagraph);
+        }
+        pushTask10Evidence('drawGuess', {
+          entry: isInitial ? 'reply-initial' : (imageBase64 ? 'reply-image' : 'reply-text'),
+          mode: drawGuessState.mode,
+          endState: 'errored',
+          controlledDegrade: true,
+          errorMessage: error && error.message ? error.message : String(error)
+        });
         await showCustomAlert("AI响应失败", `无法获取回复: ${error.message}`);
       } finally {
         drawGuessState.isAiResponding = false;
@@ -80509,4 +82738,3 @@ function getCustomPromptIfExists(scenePath) {
   }
   return promptManager.getPrompt(scenePath);
 }
-
