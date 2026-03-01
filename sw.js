@@ -2,7 +2,7 @@
 // 【智能缓存策略】- 根据资源类型使用不同的缓存策略，优化加载速度
 
 // 缓存版本号（智能缓存策略）
-const CACHE_VERSION = 'v0.0.17';
+const CACHE_VERSION = 'v0.0.31';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 function createHtmlOfflineResponse(requestUrl) {

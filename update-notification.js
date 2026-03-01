@@ -2,7 +2,7 @@
 class UpdateNotification {
   constructor() {
     this.storageKey = 'update_notification_dismissed';
-    this.currentVersion = '0.0.16'; // 当前更新版本号
+    this.currentVersion = '0.0.25'; // 当前更新版本号
     this.countdownSeconds = 5;
     this.countdownInterval = null;
   }
@@ -22,14 +22,21 @@ class UpdateNotification {
       <div class="update-item important-note">注意：首次打开最好使用魔法</div>
       <div class="update-item tips">有任何问题请通过DC私信联系 <a href="https://discord.com/users/1353222930875551804" target="_blank" style="color: #4A9EFF;">点击前往</a>，其他渠道可能无法及时回复</div>
       <div class="update-divider">本次更新内容</div>
-      <div class="update-item tips" style="margin-bottom: 8px;">点三下强制跳过更新日志弹窗。有问题的可以试一下。</div>
-      <div class="update-item">1.修复小组件改完刷新又回去的问题</div>
-      <div class="update-item">2.修复数据大的问题，记得一键清空一下API调用历史</div>
-      <div class="update-item">3.修复绿江追更失败的BUG、新增追更时间</div>
-      <div class="update-item">4.新增自定义时间感知</div>
-      <div class="update-item">5.角色生成新增其他分裂，可以挂破限。还增加了根据用户人设生成，可选。</div>
-      <div class="update-item">6.新增角色可以帮你清空购物车，需要打开后台活动，暂时还没测试过</div>
-      <div class="update-item">7.优化结构化记忆，如果之前有旧数据，打开就可以自动转换为结构化记忆。修复之前结构化记忆不更新的问题，新增可以手动更新。</div>
+      <div class="update-item">1.修复不读旁白的问题，现在应该读了。</div>
+      <div class="update-item">2.修复群聊发送私信发送不了的BUG</div>
+      <div class="update-item">3.新增长期记忆读取条数。不开启的话默认读取所有长期记忆。</div>
+      <div class="update-item">4.修复语音通话不能编辑，角色不能主动打语音的问题</div>
+      <div class="update-item">5.优化了结构化提示词提取的逻辑</div>
+      <div class="update-item">6.新增一个真全屏开关。</div>
+      <div class="update-item">7.新增一起看窗口重置位置的按钮，拖到外面重置一下即可</div>
+      <div class="update-item">8.优化双语模式（灵感来源1900老师）</div>
+      <div class="update-item">9.新增后台活动API</div>
+      <div class="update-item">10.优化番茄钟APP</div>
+      <div class="update-item">11.新增后台决定查手机概率，平时聊天的话自己引导触发即可</div>
+      <div class="update-item">12.修改视频通话的提示词，改成旁白和语言分开读，现在应该可以只读旁白了！</div>
+      <div class="update-item">13.修复月经无法编辑的问题。</div>
+      <div class="update-item tips" style="margin-top: 8px;">优化一些其他的地方，不细写了</div>
+      <div class="update-item tips">注意：现在逻辑改变为如果开启了结构化记忆和长期记忆，只读结构化记忆省TOKEN。</div>
     `;
 
     return `
@@ -37,7 +44,7 @@ class UpdateNotification {
         <div id="update-notification-modal">
           <img src="https://i.postimg.cc/hGh6rJ5r/retouch-2026013121094970.png" class="update-decoration-img">
           <div class="update-notification-header">
-            <div class="update-title">2.15 更新（没赶上情人节呜呜呜）</div>
+            <div class="update-title">2.25 更新</div>
           </div>
           
           <div class="update-notification-body">
