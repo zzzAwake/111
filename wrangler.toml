@@ -1,0 +1,8 @@
+name = "111"
+compatibility_date = "2026-03-01"
+
+[build]
+command = "rm -rf .pages-assets && mkdir -p .pages-assets && cp -f index.html manifest.json .pages-assets/ && cp -f *.js *.css .pages-assets/ && (cp -f *.png *.jpg *.jpeg *.svg *.webp *.ico .pages-assets/ 2>/dev/null || true)"
+
+[assets]
+directory = "./.pages-assets"
