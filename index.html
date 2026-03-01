@@ -8,8 +8,6 @@
   <link rel="stylesheet" href="update-notification.css">
   <link rel="stylesheet" href="structured-memory.css">
   <link rel="stylesheet" href="online-app.css">
-  <link rel="stylesheet" href="period-tracker.css">
-  <link rel="stylesheet" href="focus-timer.css">
   <link rel="apple-touch-icon" href="https://s3plus.meituan.net/opapisdk/op_ticket_885190757_1758510900942_qdqqd_djw0z2.jpeg">
   <link rel="manifest" href="manifest.json">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -26,10 +24,12 @@
   <script src="https://cdn.jsdelivr.net/npm/streamsaver@2.0.6/StreamSaver.min.js" defer></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/browser-image-compression@2.0.2/dist/browser-image-compression.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js" defer></script>
-  <script src="update-notification.js?v=0.0.21" defer></script>
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+  <script src="update-notification.js?v=0.0.16" defer></script>
   <script src="prompt-manager.js" defer></script>
   <script src="online-chat-manager.js" defer></script>
   <script src="online-chat-integration.js" defer></script>
@@ -37,11 +37,8 @@
   <script src="notification-manager.js" defer></script>
   <script src="character-generator.js" defer></script>
   <script src="structured-memory.js" defer></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <script src="script.js" defer="defer"></script>
-  <script src="period-tracker.js" defer></script>
-  <script src="focus-timer.js" defer></script>
   <script src="helper-assistant.js" defer></script>
   <script src="force-update.js" defer></script>
   
@@ -404,63 +401,9 @@
   </style>
 </head>
 <body>
-  <div id="intro-screen">
-    <div class="intro-egg-container">
-        <div class="intro-wing left-wing">
-            <svg viewBox="0 0 100 100" fill="white">
-                <path d="M100,50 Q80,20 40,10 Q10,20 0,50 Q20,80 60,80 Q90,70 100,50 Z" />
-            </svg>
-        </div>
-        <div class="intro-egg">
-            <div class="egg-pattern">
-                <svg viewBox="0 0 24 24" fill="#ffb7c5" style="width: 40px; height: 40px; opacity: 0.5;">
-                    <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
-                </svg>
-            </div>
-        </div>
-        <div class="intro-wing right-wing">
-            <svg viewBox="0 0 100 100" fill="white">
-                <path d="M0,50 Q20,20 60,10 Q90,20 100,50 Q80,80 40,80 Q10,70 0,50 Z" />
-            </svg>
-        </div>
-    </div>
-    <div class="intro-text">Tap to Start</div>
-  </div>
 
-  <div id="ephone-auth-screen" class="hidden">
-    <div class="ephone-auth-container">
-      <!-- 装饰元素 -->
-      <div class="shugo-chara-decoration deco-heart">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
-      </div>
-      <div class="shugo-chara-decoration deco-spade">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C9 2 7 4.3 7 6.5C7 8.2 8.2 9.6 9.6 10C7.2 11.2 3 14.5 3 18.5C3 21.5 5.5 22 7 22C8.2 22 9.2 21.2 9.2 20.5C9.2 19.5 8.2 19 7.2 19C6.8 19 6.5 19.2 6.5 19.5C6.8 18.2 8.2 17 9.5 17C11 17 11.5 18 11.5 20V22H12.5V20C12.5 18 13 17 14.5 17C15.8 17 17.2 18.2 17.5 19.5C17.5 19.2 17.2 19 16.8 19C15.8 19 14.8 19.5 14.8 20.5C14.8 21.2 15.8 22 17 22C18.5 22 21 21.5 21 18.5C21 14.5 16.8 11.2 14.4 10C15.8 9.6 17 8.2 17 6.5C17 4.3 15 2 12 2Z"/></svg>
-      </div>
-      <div class="shugo-chara-decoration deco-clover">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.5 9c-.4 0-.7.1-1.1.2C16.2 8.1 16.5 6.9 16.5 5.5 16.5 2.5 14.5 0 12 0S7.5 2.5 7.5 5.5c0 1.4.3 2.6 1.1 3.7C8.2 9.1 7.9 9 7.5 9 4.5 9 2 11.5 2 14.5c0 2.6 1.8 4.7 4.2 5.3C6.1 19.9 6 20 6 20.2v3.8h12v-3.8c0-.2-.1-.3-.2-.4 2.4-.6 4.2-2.7 4.2-5.3C22 11.5 19.5 9 16.5 9z"/></svg>
-      </div>
-      <div class="shugo-chara-decoration deco-diamond">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L2 12l10 10 10-10L12 2z"/></svg>
-      </div>
-      
-      <div class="ephone-auth-logo">
-        <svg viewBox="0 0 24 24" fill="currentColor" style="width: 100%; height: 100%;">
-            <path d="M12 1C8.676 1 6 3.676 6 7v3H4v12h16V10h-2V7c0-3.324-2.676-6-6-6zm0 2c2.276 0 4 1.724 4 4v3H8V7c0-2.276 1.724-4 4-4zm0 10c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2z"/>
-        </svg>
-      </div>
-      <h2 class="ephone-auth-title">Unlock My Heart</h2>
-      <p class="ephone-auth-subtitle">Unlock with your Password!</p>
-      <div class="ephone-auth-form">
-        <input type="text" id="ephone-account" placeholder="Account" autocomplete="username">
-        <input type="password" id="ephone-password" placeholder="Password" autocomplete="current-password">
-        <button id="ephone-login-btn">Unlock!</button>
-      </div>
-      <div id="ephone-auth-error" class="ephone-auth-error"></div>
-      <div class="ephone-auth-help">
-        <p>遇到登录问题？请查看 <a href="https://discord.com/channels/1379304008157499423/1417316084465270854/1463764186139197563" target="_blank">帮助文档</a></p>
-      </div>
-    </div>
-  </div>
+
+
 
   <div id="phone-screen">
     <div id="status-bar"> <span id="status-bar-time">12:00</span>
@@ -762,13 +705,13 @@
                   <div class="icon-bg-desktop"><div class="p3-placeholder-icon">?</div></div>
                   <span class="label">论坛</span>
                 </div>
-                <div class="desktop-app-icon" onclick="openPeriodTracker()">
-                  <div class="icon-bg-desktop"><img id="icon-img-period-tracker" src="https://i.postimg.cc/RVGt0yMN/calendar-pink.png" alt="月经记录"></div>
-                  <span class="label">月经记录</span>
+                <div class="desktop-app-icon p3-placeholder-app">
+                  <div class="icon-bg-desktop"><div class="p3-placeholder-icon">?</div></div>
+                  <span class="label">家居</span>
                 </div>
-                <div class="desktop-app-icon" onclick="openFocusTimer()">
-                  <div class="icon-bg-desktop"><img id="icon-img-focus-timer" src="https://i.postimg.cc/Kz8d9YJy/tomato-timer.png" alt="番茄钟"></div>
-                  <span class="label">番茄钟</span>
+                <div class="desktop-app-icon p3-placeholder-app">
+                  <div class="icon-bg-desktop"><div class="p3-placeholder-icon">?</div></div>
+                  <span class="label">宠物</span>
                 </div>
                 <div class="desktop-app-icon p3-placeholder-app">
                   <div class="icon-bg-desktop"><div class="p3-placeholder-icon">?</div></div>
@@ -798,177 +741,6 @@
         </div>
       </div>
     </div>
-    <!-- 月经记录屏幕 -->
-    <div id="period-tracker-screen" class="screen">
-      <div class="header">
-        <span class="back-btn" onclick="showScreen('home-screen')">‹</span>
-        <span>月经记录</span>
-        <span style="width: 30px;"></span>
-      </div>
-      <div class="period-nav">
-        <button class="period-nav-btn active" data-view="calendar" onclick="switchPeriodView('calendar')">日历</button>
-        <button class="period-nav-btn" data-view="history" onclick="switchPeriodView('history')">历史</button>
-        <button class="period-nav-btn" data-view="report" onclick="switchPeriodView('report')">报告</button>
-        <button class="period-nav-btn" data-view="settings" onclick="switchPeriodView('settings')">设置</button>
-      </div>
-      <div id="period-calendar-view" class="period-view">
-        <div id="period-calendar-content"></div>
-      </div>
-      <div id="period-history-view" class="period-view" style="display: none;">
-        <div id="period-history-content"></div>
-      </div>
-      <div id="period-report-view" class="period-view" style="display: none;">
-        <div id="period-report-content"></div>
-      </div>
-      <div id="period-settings-view" class="period-view" style="display: none;">
-        <div id="period-settings-content"></div>
-      </div>
-    </div>
-
-    <!-- 月经记录 - 添加记录弹窗 -->
-    <div id="period-add-modal" class="modal" style="display: none;">
-      <div class="modal-content">
-        <div class="modal-header">
-          <span>记录经期</span>
-          <span class="close-btn" onclick="hidePeriodAddModal()">×</span>
-        </div>
-        <div class="modal-body" style="padding: 20px;">
-          <div class="period-form-group">
-            <label>开始日期</label>
-            <input type="date" id="period-start-date" class="period-input">
-          </div>
-          <div class="period-form-group">
-            <label>结束日期（可选）</label>
-            <input type="date" id="period-end-date" class="period-input">
-          </div>
-          <div class="period-form-group">
-            <label>流量</label>
-            <select id="period-flow" class="period-input">
-              <option value="light">少量</option>
-              <option value="medium" selected>中等</option>
-              <option value="heavy">较多</option>
-            </select>
-          </div>
-          <div class="period-form-group">
-            <label>症状（可选）</label>
-            <input type="text" id="period-symptoms" class="period-input" placeholder="如：痛经、腰酸...">
-          </div>
-          <div class="period-form-group">
-            <label>心情</label>
-            <select id="period-mood" class="period-input">
-              <option value="great">很好</option>
-              <option value="good">不错</option>
-              <option value="normal" selected>一般</option>
-              <option value="bad">不好</option>
-              <option value="terrible">很差</option>
-            </select>
-          </div>
-          <div class="period-form-group">
-            <label>备注（可选）</label>
-            <textarea id="period-notes" class="period-input" rows="3" placeholder="其他想记录的..."></textarea>
-          </div>
-          <div class="period-form-group">
-            <label>痛经程度 (0-10分)</label>
-            <input type="range" id="period-pain-level" class="period-slider" min="0" max="10" value="0" oninput="updatePainLevelDisplay(this.value)">
-            <div style="text-align: center; margin-top: 5px; color: #FF9EAA; font-weight: 600;">
-              <span id="pain-level-display">0</span> / 10
-            </div>
-          </div>
-          <div class="period-form-group">
-            <label>PMS症状（可多选）</label>
-            <div class="pms-checkboxes">
-              <label><input type="checkbox" class="pms-checkbox" value="胸痛"> 胸痛</label>
-              <label><input type="checkbox" class="pms-checkbox" value="腹胀"> 腹胀</label>
-              <label><input type="checkbox" class="pms-checkbox" value="易怒"> 易怒</label>
-              <label><input type="checkbox" class="pms-checkbox" value="失眠"> 失眠</label>
-              <label><input type="checkbox" class="pms-checkbox" value="头痛"> 头痛</label>
-              <label><input type="checkbox" class="pms-checkbox" value="疲劳"> 疲劳</label>
-              <label><input type="checkbox" class="pms-checkbox" value="食欲增加"> 食欲增加</label>
-              <label><input type="checkbox" class="pms-checkbox" value="水肿"> 水肿</label>
-              <label><input type="checkbox" class="pms-checkbox" value="长痘"> 长痘</label>
-            </div>
-            <input type="text" id="period-pms-custom" class="period-input" placeholder="其他症状（用逗号分隔）" style="margin-top: 8px;">
-          </div>
-          <div class="period-form-group">
-            <label>用品更换次数</label>
-            <input type="text" id="period-product-changes" class="period-input" placeholder="例如：5次/天">
-          </div>
-          <div class="period-form-group">
-            <label>睡眠质量</label>
-            <input type="range" id="period-sleep-quality" class="period-slider" min="1" max="5" value="3" oninput="updateStarDisplay(this.value)">
-            <div id="sleep-stars-display" style="text-align: center; margin-top: 5px; font-size: 20px;">⭐⭐⭐☆☆</div>
-          </div>
-          <div class="period-form-group">
-            <label>运动时长（分钟）</label>
-            <input type="number" id="period-exercise-duration" class="period-input" placeholder="例如：30" min="0">
-          </div>
-          <button class="period-btn-primary" onclick="savePeriodRecord()">保存</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 月经记录 - 详情弹窗 -->
-    <div id="period-detail-modal" class="modal" style="display: none;">
-      <div class="modal-content">
-        <div class="modal-header">
-          <span>详情</span>
-          <span class="close-btn" onclick="hidePeriodDetailModal()">×</span>
-        </div>
-        <div class="modal-body" style="padding: 20px;">
-          <div id="period-detail-content"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 番茄钟 - 角色选择弹窗 -->
-    <div id="focus-companion-modal" style="display: none;">
-      <div class="focus-companion-modal-content">
-        <div class="focus-companion-modal-header">
-          <span class="focus-companion-modal-title">选择陪伴角色</span>
-          <button class="focus-companion-modal-close" onclick="closeFocusCompanionModal()">×</button>
-        </div>
-        <div class="focus-companion-modal-body">
-          <div id="focus-companion-list"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 番茄钟 - 设置弹窗 -->
-    <div id="focus-settings-modal" style="display: none;">
-      <div class="focus-settings-modal-content">
-        <div class="focus-settings-modal-header">番茄钟设置</div>
-        <div class="focus-settings-form">
-          <div class="focus-settings-row">
-            <label class="focus-settings-label">专注时长（分钟）</label>
-            <input type="number" id="focus-duration-input" class="focus-settings-input" 
-                   min="1" max="120" value="25">
-          </div>
-          <div class="focus-settings-row">
-            <label class="focus-settings-label">定时呼叫间隔（分钟）</label>
-            <input type="number" id="auto-call-interval-input" class="focus-settings-input" 
-                   min="0" max="60" value="0" placeholder="0表示不启用">
-          </div>
-          <div class="focus-settings-hint">
-            设置后，角色会按间隔时间自动呼叫你
-          </div>
-        </div>
-        <div class="focus-settings-actions">
-          <button class="focus-btn focus-btn-secondary" onclick="closeFocusSettings()">取消</button>
-          <button class="focus-btn focus-btn-primary" onclick="saveFocusSettings()">保存</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 番茄钟屏幕 -->
-    <div id="focus-timer-screen" class="screen">
-      <div class="header">
-        <span class="back-btn" onclick="showScreen('home-screen')">‹</span>
-        <span>番茄钟</span>
-        <span style="width: 30px;"></span>
-      </div>
-      <div id="focus-timer-content" class="list-container"></div>
-    </div>
-
     <div id="character-selection-screen" class="screen">
       <div class="header"> <span class="back-btn" onclick="showScreen('home-screen')">‹</span> <span data-lang-key="cphoneTitleSelect">选择一部手机</span> <span style="width: 30px;"></span> </div>
       <div id="character-grid" class="list-container"> </div>
@@ -1211,10 +983,7 @@
       </div>
       <div id="char-diary-detail-screen" class="char-screen">
         <div class="header"> <span class="back-btn" id="char-diary-detail-back-btn">‹ </span> <span id="char-diary-detail-title"></span>
-          <div class="header-actions"> <span class="action-btn" id="edit-diary-btn" title="编辑日记"> <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-              </svg> </span> <span class="action-btn" id="favorite-diary-btn" title="收藏"> <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <div class="header-actions"> <span class="action-btn" id="favorite-diary-btn" title="收藏"> <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
               </svg> </span> <span class="action-btn" id="copy-diary-content-btn" title="复制内容"> <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
@@ -1949,16 +1718,6 @@
                     <button id="open-console-btn" class="settings-mini-btn">打开控制台</button>
                 </div>
             </div>
-            <div class="settings-item">
-                <label>安全渲染模式</label>
-                <label class="toggle-switch">
-                    <input type="checkbox" id="safe-render-mode-switch">
-                    <span class="slider"></span>
-                </label>
-            </div>
-            <p class="settings-description" style="padding: 0 15px 10px; color: #888; font-size: 12px;">
-                若聊天列表显示空白，请开启此选项后刷新页面。开启后单个聊天项渲染失败不会影响其他项。
-            </p>
         </div>
 
         <!-- API 预设 -->
@@ -2051,41 +1810,6 @@
             </div>
         </div>
 
-        <!-- 后台活动 API 设置 -->
-        <div class="settings-header" data-lang-key="apiBackgroundSettings">后台活动 API 设置</div>
-        <div class="settings-section">
-            <div class="settings-tip-wrapper">
-                <div class="settings-tip-content">
-                    提示: 后台活动API用于角色自主行为。留空则使用主API。建议配置更便宜的模型以节省费用。
-                </div>
-            </div>
-            <div class="settings-item">
-                <label data-lang-key="apiBackgroundProxyUrlLabel">反代地址</label>
-                <div class="settings-right">
-                    <input type="text" id="background-proxy-url" placeholder="留空使用主API">
-                </div>
-            </div>
-            <div class="settings-item">
-                <label data-lang-key="apiBackgroundKeyLabel">API Key</label>
-                <div class="settings-right">
-                    <input type="password" id="background-api-key" placeholder="可选">
-                </div>
-            </div>
-            <div class="settings-item">
-                <label data-lang-key="apiBackgroundModelLabel">模型（手写）</label>
-                <div class="settings-right">
-                    <input type="text" id="background-model-input" placeholder="可手写模型名称或从下方拉取自动填入" style="flex-grow: 1;">
-                </div>
-            </div>
-            <div class="settings-item">
-                <label data-lang-key="apiFetchBackgroundModelsBtn">拉取模型</label>
-                <div class="settings-right">
-                    <select id="background-model-select" class="settings-select" style="flex-grow: 1; width: auto;"></select>
-                    <button id="fetch-background-models-btn" class="settings-mini-btn">拉取</button>
-                </div>
-            </div>
-        </div>
-
         <!-- 参数设置 -->
         <div class="settings-header">参数设置</div>
         <div class="settings-section">
@@ -2119,21 +1843,8 @@
                     <input type="number" id="block-cooldown-input" min="0.1" step="0.1" value="1" class="settings-num-input">
                 </div>
             </div>
-            <div class="settings-item">
-                <label>后台查看用户手机</label>
-                <label class="toggle-switch">
-                    <input type="checkbox" id="global-enable-view-myphone-bg-switch">
-                    <span class="slider"></span>
-                </label>
-            </div>
-            <div class="settings-item">
-                <label>查看概率 (%)</label>
-                <div class="settings-right">
-                    <input type="number" id="global-view-myphone-chance-input" min="0" max="100" placeholder="留空=AI自主决定" class="settings-num-input">
-                </div>
-            </div>
         </div>
-        <div class="settings-desc">开启后台活动会增加 API 费用。后台查看手机：留空概率时AI自主决定，填写0-100则按概率触发。</div>
+        <div class="settings-desc">开启后台活动会增加 API 费用。</div>
 
         <!-- 语音设置 -->
         <div class="settings-header" data-lang-key="apiTtsSettings">Minimax TTS 语音</div>
@@ -2435,6 +2146,32 @@
                     <span class="slider"></span>
                 </label>
             </div>
+
+            <div class="settings-item api-streaming-row">
+                <div>
+                    <div style="font-weight: 500;">启用流式输出</div>
+                    <div class="settings-desc">开启后可接收正在生成结果的实时流</div>
+                </div>
+                <div class="settings-right">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="api-streaming-switch">
+                        <span class="slider"></span>
+                    </label>
+                    <span id="api-streaming-status-text" class="settings-status-text">未启用</span>
+                </div>
+            </div>
+            <div class="settings-item api-streaming-row">
+                <div>
+                    <div style="font-weight: 500;">流式回退机制</div>
+                    <div class="settings-desc">在流式异常时自动降级到普通请求</div>
+                </div>
+                <div class="settings-right">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="api-streaming-fallback-switch">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+            </div>
         </div>
 
         <!-- AI行为控制 (全局默认) -->
@@ -2469,17 +2206,6 @@
                 </div>
                 <label class="toggle-switch">
                     <input type="checkbox" id="global-enable-view-myphone-switch">
-                    <span class="slider"></span>
-                </label>
-            </div>
-            
-            <div class="settings-item">
-                <div>
-                    <div style="font-weight: 500;">跨聊天消息</div>
-                    <div style="font-size: 12px; color: var(--text-secondary);">AI可以在群聊中给你发私信，或在私聊中给群聊发消息</div>
-                </div>
-                <label class="toggle-switch">
-                    <input type="checkbox" id="global-enable-cross-chat-switch">
                     <span class="slider"></span>
                 </label>
             </div>
@@ -2817,7 +2543,7 @@
         </div>
 
         <!-- 系统级通知 -->
-        <div class="settings-header">系统级通知 <span style="font-size: 12px; color: #999; margin-left: 10px;">v2.1.0</span></div>
+        <div class="settings-header">系统级通知 <span style="font-size: 12px; color: #999; margin-left: 10px;">v1.0.9</span></div>
         <div class="settings-section">
             <!-- 1. 主开关 -->
             <div class="settings-item">
@@ -2984,7 +2710,6 @@
             
             <!-- 列表按钮：黑色左对齐 -->
             <button class="settings-full-btn" id="clear-chat-images-btn">清空聊天的本地图片</button>
-            <button class="settings-full-btn" id="clear-chat-html-btn">清空聊天的HTML内容</button>
             <button class="settings-full-btn" id="clear-api-history-btn">清空所有API历史记录</button>
             <button class="settings-full-btn" id="clear-stickers-btn">一键清空表情包</button>
             <button class="settings-full-btn" id="view-data-distribution-btn" data-lang-key="apiViewDataDistributionBtn">查看数据分布</button>
@@ -3109,35 +2834,6 @@
         <div class="modal-footer">
           <button class="cancel" id="cancel-clear-images-btn">取消</button>
           <button class="save btn-danger" id="confirm-clear-images-btn">确认清空</button>
-        </div>
-      </div>
-    </div>
-    <div id="clear-chat-html-modal" class="modal">
-      <div class="modal-content" style="height: 75%;">
-        <div class="modal-header">
-          <span>选择要清空HTML的聊天</span>
-          <label>
-            <input type="checkbox" id="select-all-chats-for-html-clear"> 全选
-          </label>
-        </div>
-        <div class="modal-body" style="padding: 10px;">
-          <div style="margin-bottom: 15px; padding: 10px; background: var(--bg-secondary); border-radius: 8px;">
-            <div style="font-weight: 500; margin-bottom: 8px;">清理模式：</div>
-            <label style="display: flex; align-items: center; margin-bottom: 8px; cursor: pointer;">
-              <input type="radio" name="html-clear-mode" value="strip" checked style="margin-right: 8px;">
-              <span>剥离HTML标签（保留纯文本内容）</span>
-            </label>
-            <label style="display: flex; align-items: center; cursor: pointer;">
-              <input type="radio" name="html-clear-mode" value="delete" style="margin-right: 8px;">
-              <span>直接删除含HTML的消息</span>
-            </label>
-          </div>
-          <div id="clear-chat-html-list" style="max-height: calc(100% - 100px); overflow-y: auto;">
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="cancel" id="cancel-clear-html-btn">取消</button>
-          <button class="save btn-danger" id="confirm-clear-html-btn">确认清空</button>
         </div>
       </div>
     </div>
@@ -3371,10 +3067,6 @@
       </div>
       <div id="chat-input-area">
         <div id="chat-at-mention-popup" class="at-mention-popup"></div>
-        <!-- 智能匹配表情包显示区域 -->
-        <div id="smart-sticker-match-panel" style="display: none;">
-          <div id="smart-sticker-match-grid"></div>
-        </div>
         <div id="reply-preview-bar">
           <div class="reply-preview-content">
             <div class="sender">回复 xxx:</div>
@@ -3497,13 +3189,6 @@
 <button id="open-quick-reply-btn" class="chat-action-icon-btn action-button" title="快捷回复">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
-              </svg>
-            </button>
-<button id="narration-btn" class="chat-action-icon-btn action-button" title="旁白">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-                <line x1="9" y1="10" x2="15" y2="10"></line>
-                <line x1="12" y1="7" x2="12" y2="13"></line>
               </svg>
             </button>
 <button id="open-todo-list-btn" class="chat-action-icon-btn action-button" title="待办事项">
@@ -3831,16 +3516,6 @@
                 </div>
                 <label class="toggle-switch">
                     <input type="checkbox" id="minimal-chat-ui-switch">
-                    <span class="slider"></span>
-                </label>
-            </div>
-            <div class="settings-item">
-                <div>
-                    <label>真全屏模式</label>
-                    <div class="settings-desc">隐藏系统状态栏，内容延伸至屏幕顶部</div>
-                </div>
-                <label class="toggle-switch">
-                    <input type="checkbox" id="true-fullscreen-switch">
                     <span class="slider"></span>
                 </label>
             </div>
@@ -4407,11 +4082,6 @@
                 <div id="group-members-settings" class="horizontal-scroll-list"></div> 
                 <button id="manage-members-btn" class="settings-full-btn">管理所有群成员</button>
             </div>
-            <div class="settings-item-block" id="spectator-memory-settings-group" style="display: none;">
-                <label>旁观记忆设置</label>
-                <div class="settings-desc" style="margin-bottom: 8px;">选择在旁观剧情中保留与您有关的长期记忆的角色；未选中的角色不会带入与您的记忆，不会 @ 您。</div>
-                <button id="spectator-memory-settings-btn" class="settings-full-btn">设置哪些角色保留与用户的记忆</button>
-            </div>
             
             <div class="settings-item" id="switch-greeting-group" style="display: none;">
                  <label>开场白</label>
@@ -4469,28 +4139,6 @@
                         <input type="checkbox" id="char-auto-cart-clear-switch"> 
                         <span class="slider"></span> 
                     </label>
-                </div>
-                
-                <!-- 后台查看用户手机 -->
-                <div class="settings-item" style="display: flex !important; justify-content: space-between !important; align-items: center !important; flex-direction: row !important;">
-                     <div style="flex: 1; padding-right: 10px; display: flex; flex-direction: column; align-items: flex-start;">
-                        <label style="margin-bottom: 2px;">后台查看用户手机</label>
-                        <div class="settings-desc">
-                            <select id="char-view-myphone-bg-select" style="width: 100%; padding: 5px; margin-top: 5px; border-radius: 4px; border: 1px solid #ddd;">
-                                <option value="null">跟随全局</option>
-                                <option value="true">开启</option>
-                                <option value="false">关闭</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- 查看概率 -->
-                <div class="settings-item">
-                    <label>查看概率 (%)</label>
-                    <div class="settings-right">
-                        <input type="number" id="char-view-myphone-chance-input" min="0" max="100" placeholder="留空=使用全局" class="settings-num-input">
-                    </div>
                 </div>
 
             </div>
@@ -4569,23 +4217,6 @@
                     <div class="settings-desc">用压缩表格格式存储记忆，大幅降低token占用</div>
                 </div>
                 <label class="toggle-switch"> <input type="checkbox" id="structured-memory-toggle"> <span class="slider"></span> </label>
-            </div>
-
-            <!-- 限制长期记忆读取数量 -->
-            <div class="settings-item-block" id="limit-memory-group">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; height: 30px;">
-                    <label for="limit-memory-toggle" style="line-height: 30px;">限制长期记忆读取数量</label>
-                    <label class="toggle-switch">
-                        <input type="checkbox" id="limit-memory-toggle">
-                        <span class="slider"></span>
-                    </label>
-                </div>
-                <div id="memory-limit-input-group" style="display: none; padding: 8px 0;">
-                    <label style="margin-right: 8px;">读取最近</label>
-                    <input type="number" id="memory-limit-count" min="1" max="1000" value="50" style="width: 80px; padding: 4px; border: 1px solid #ddd; border-radius: 4px;">
-                    <label style="margin-left: 8px;">条记忆</label>
-                </div>
-                <div class="settings-desc" style="margin-top: 4px; font-size: 12px; color: #666;">仅在未开启结构化记忆时生效，默认读取全部</div>
             </div>
 
             <!-- 挂载聊天 -->
@@ -4698,21 +4329,9 @@
                 </select>
             </div>
             
-            <div class="settings-item" id="ai-behavior-cross-chat-item">
-                <div>
-                    <div style="font-weight: 500;">跨聊天消息</div>
-                    <div style="font-size: 12px; color: var(--text-secondary);">AI可以在群聊中给你发私信，或在私聊中给群聊发消息</div>
-                </div>
-                <select id="chat-enable-cross-chat-select" style="padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); background-color: var(--secondary-bg);">
-                    <option value="null">使用全局设置</option>
-                    <option value="true">开启</option>
-                    <option value="false">关闭</option>
-                </select>
-            </div>
-            
             <div class="settings-item" id="ai-behavior-status-item">
                 <div style="font-size: 12px; color: #666; padding: 10px; background: #f5f5f5; border-radius: 6px; width: 100%;">
-                    💡 当前全局设置：心声功能 <span id="global-thoughts-status">关闭</span>，动态功能 <span id="global-qzone-status">关闭</span>，查看手机 <span id="global-view-myphone-status">关闭</span>，跨聊天消息 <span id="global-cross-chat-status">开启</span>
+                    💡 当前全局设置：心声功能 <span id="global-thoughts-status">关闭</span>，动态功能 <span id="global-qzone-status">关闭</span>，查看手机 <span id="global-view-myphone-status">关闭</span>
                 </div>
             </div>
         </div>
@@ -5018,34 +4637,10 @@
         <div class="settings-desc">AI每轮回复都会附带环境或心理描写 (灰色系统字)</div>
     </div>
     <label class="toggle-switch" style="margin: 0;"> 
-        <input type="checkbox" id="narrator-mode-toggle">
-        <span class="slider"></span>
-    </label>
-</div>
-
-<!-- 双语模式设置 -->
-<div class="settings-item" id="bilingual-mode-group" style="display: flex; justify-content: space-between; align-items: center;">
-    <div style="flex: 1; padding-right: 10px;">
-        <label style="margin-bottom: 2px;">启用双语模式</label>
-        <div class="settings-desc">AI回复会同时包含外语和中文翻译，点击消息可切换显示</div>
-    </div>
-    <label class="toggle-switch" style="margin: 0;"> 
-        <input type="checkbox" id="bilingual-mode-toggle"> 
+        <input type="checkbox" id="narrator-mode-toggle"> 
         <span class="slider"></span> 
     </label>
 </div>
-
-<!-- 双语模式显示位置设置 -->
-<div class="settings-item" id="bilingual-display-mode-group" style="display: none;">
-    <label>翻译显示位置</label>
-    <div class="settings-right">
-        <select id="bilingual-display-mode-select" class="settings-select" style="width: 100%; text-align: right;">
-            <option value="outside">气泡外部</option>
-            <option value="inside">气泡内部</option>
-        </select>
-    </div>
-</div>
-
 <div class="settings-item" id="todo-list-setting-group">
     <div style="flex: 1; padding-right: 10px;">
         <label style="margin-bottom: 2px;">启用待办事项同步</label>
@@ -5064,18 +4659,6 @@
                  </div>
                  <label class="toggle-switch"> 
                     <input type="checkbox" id="enable-sticker-vision-checkbox"> 
-                    <span class="slider"></span> 
-                 </label>
-             </div>
-             
-             <!-- 表情包智能匹配 -->
-             <div class="settings-item" id="sticker-smart-match-group">
-                 <div>
-                    <label>启用表情包智能匹配</label>
-                    <div class="settings-desc">输入文字时自动匹配相关表情包</div>
-                 </div>
-                 <label class="toggle-switch"> 
-                    <input type="checkbox" id="enable-sticker-smart-match-checkbox"> 
                     <span class="slider"></span> 
                  </label>
              </div>
@@ -5593,16 +5176,6 @@
     
     <div class="gr-reader-content" id="gr-reader-content">
         </div>
-
-    <div id="gr-reader-comments-popup" class="gr-comments-popup" style="display:none;">
-        <div class="gr-comments-popup-inner">
-            <div class="gr-comments-popup-header">
-                <span>💬 读者评论</span>
-                <button type="button" class="gr-comments-popup-close" aria-label="关闭">&times;</button>
-            </div>
-            <div class="gr-comments-popup-list"></div>
-        </div>
-    </div>
 
     <div class="gr-control-panel">
         <div id="gr-pagination-controls" style="display:flex; justify-content:space-between; align-items:center; width:100%;">
@@ -6431,11 +6004,6 @@
           <input type="number" id="watch-together-max-messages" min="5" max="100" value="20" style="width: 100%; padding: 8px; border: 1px solid #d0d0d0; border-radius: 4px;">
           <p style="font-size: 12px; color: #999; margin-top: 5px;">AI能记住的最近对话记录数量，超出部分将被删除</p>
         </div>
-        <div class="form-group" style="margin-bottom: 20px;">
-          <label style="display: block; margin-bottom: 8px; font-size: 14px; color: #333;">对话框位置</label>
-          <button id="reset-watch-together-position-btn" style="width: 100%; padding: 10px; background: #5a9fd4; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">重置位置</button>
-          <p style="font-size: 12px; color: #999; margin-top: 5px;">如果对话框被拖到屏幕外，点击此按钮可恢复到默认位置</p>
-        </div>
       </div>
       <div class="modal-footer">
         <button class="cancel" id="cancel-watch-together-settings-btn">取消</button>
@@ -6541,7 +6109,6 @@
       <div class="modal-body" id="token-breakdown-body" style="padding: 0; overflow-y: auto;">
       </div>
       <div class="modal-footer">
-        <button class="primary" id="token-breakdown-refresh-btn">刷新</button>
         <button class="cancel" id="token-breakdown-close-btn">关闭</button>
       </div>
     </div>
@@ -6667,26 +6234,6 @@
         </div>
         <hr style="opacity: 0.2; margin: 15px 0;">
         <div class="form-group douban-settings-item">
-          <label> 
-            <input type="checkbox" id="douban-enable-ai-avatar-checkbox" checked> 
-            开启通用AI生图
-            <p style="font-size: 12px; font-weight: normal; color: #999; margin-top: 5px;"> 
-              关闭后，NPC头像将使用默认头像或自定义头像库中的头像。 
-            </p> 
-          </label>
-        </div>
-        <hr style="opacity: 0.2; margin: 15px 0;">
-        <div class="form-group douban-settings-item">
-          <label> NPC头像自定义 <p style="font-size: 12px; font-weight: normal; color: #999; margin-top: 5px;"> 上传自定义NPC头像，将随机分配给使用的NPC。一个头像对应一个NPC。 </p> </label>
-        </div>
-        <button class="save" id="manage-npc-avatars-btn" style="width: calc(100% - 40px); margin: 0 20px 15px 20px; padding: 10px; font-size: 14px;">管理NPC头像</button>
-        <hr style="opacity: 0.2; margin: 15px 0;">
-        <div class="form-group douban-settings-item">
-          <label> 自定义小组管理 <p style="font-size: 12px; font-weight: normal; color: #999; margin-top: 5px;"> 添加和管理自定义豆瓣小组，设置小组名称和提示词。 </p> </label>
-        </div>
-        <button class="save" id="manage-custom-groups-btn" style="width: calc(100% - 40px); margin: 0 20px 15px 20px; padding: 10px; font-size: 14px;">管理自定义小组</button>
-        <hr style="opacity: 0.2; margin: 15px 0;">
-        <div class="form-group douban-settings-item">
           <label> 帖子管理 <p style="font-size: 12px; font-weight: normal; color: #999; margin-top: 5px;"> 可以选择性删除已生成的豆瓣帖子。 </p> </label>
         </div>
         <button class="save" id="manage-douban-posts-btn" style="width: calc(100% - 40px); margin: 0 20px 15px 20px; padding: 10px; font-size: 14px;">管理豆瓣帖子</button>
@@ -6706,67 +6253,6 @@
       <div class="modal-header"> <span>选择要删除的豆瓣帖子</span> <label style="font-size: 14px; font-weight: normal; display: flex; align-items: center; gap: 5px;"> <input type="checkbox" id="select-all-douban-posts"> 全选 </label> </div>
       <div class="modal-body" id="delete-douban-posts-list" style="padding: 0;"> </div>
       <div class="modal-footer"> <button class="cancel" id="cancel-delete-douban-posts-btn"data-lang-key="cancel">取消</button> <button class="save btn-danger" id="confirm-delete-douban-posts-btn">确认删除</button> </div>
-    </div>
-  </div>
-  <div id="npc-avatars-modal" class="modal">
-    <div class="modal-content" style="height: 70%; max-height: 600px;">
-      <div class="modal-header"> 
-        <span>NPC头像管理</span> 
-        <div style="display: flex; gap: 10px;">
-          <button class="save" id="add-npc-avatar-url-btn" style="padding: 5px 15px; font-size: 13px;">+ URL上传</button>
-          <button class="save" id="add-npc-avatar-local-btn" style="padding: 5px 15px; font-size: 13px;">+ 本地上传</button>
-        </div>
-      </div>
-      <div class="modal-body" style="padding: 15px; display: flex; flex-direction: column; height: calc(100% - 120px); overflow: hidden;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-shrink: 0;">
-          <label style="font-size: 14px; display: flex; align-items: center; gap: 5px;">
-            <input type="checkbox" id="select-all-npc-avatars"> 全选
-          </label>
-          <button class="save btn-danger" id="delete-selected-npc-avatars-btn" style="padding: 5px 15px; font-size: 13px; display: none;">删除选中</button>
-        </div>
-        <div id="npc-avatars-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 15px; overflow-y: auto; flex: 1;"> </div>
-      </div>
-      <div class="modal-footer"> 
-        <button class="cancel" id="close-npc-avatars-btn">关闭</button>
-      </div>
-    </div>
-  </div>
-  <input type="file" id="npc-avatar-local-input" accept="image/*" multiple style="display: none;">
-  <div id="custom-groups-modal" class="modal">
-    <div class="modal-content" style="height: 75%;">
-      <div class="modal-header"> 
-        <span>自定义小组管理</span> 
-        <button class="save" id="add-custom-group-btn" style="padding: 5px 15px; font-size: 13px;">+ 添加小组</button>
-      </div>
-      <div class="modal-body" id="custom-groups-list" style="padding: 15px; overflow-y: auto;"> </div>
-      <div class="modal-footer"> 
-        <button class="cancel" id="close-custom-groups-btn">关闭</button> 
-      </div>
-    </div>
-  </div>
-  <div id="edit-custom-group-modal" class="modal">
-    <div class="modal-content">
-      <div class="modal-header"> <span id="edit-group-modal-title">编辑小组</span> </div>
-      <div class="modal-body">
-        <div class="form-group">
-          <label for="custom-group-name-input">小组名称</label>
-          <input type="text" id="custom-group-name-input" placeholder="例如：吃喝玩乐小组" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px;">
-        </div>
-        <div class="form-group" style="margin-top: 15px;">
-          <label for="custom-group-prompt-input">小组提示词 <p style="font-size: 12px; font-weight: normal; color: #999; margin-top: 5px;">描述这个小组的主题和风格，AI会根据这个提示词生成相关内容</p></label>
-          <textarea id="custom-group-prompt-input" placeholder="例如：这是一个分享美食、旅游、娱乐的生活方式小组，成员们喜欢分享各地美食推荐、旅行攻略和娱乐活动..." style="width: 100%; min-height: 120px; padding: 10px; border: 1px solid #ddd; border-radius: 8px; resize: vertical;"></textarea>
-        </div>
-        <div class="form-group" style="margin-top: 15px;">
-          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-            <input type="checkbox" id="custom-group-enabled-input">
-            <span>启用此小组（刷新时生成内容）</span>
-          </label>
-        </div>
-      </div>
-      <div class="modal-footer"> 
-        <button class="cancel" id="cancel-edit-group-btn">取消</button> 
-        <button class="save" id="save-edit-group-btn">保存</button> 
-      </div>
     </div>
   </div><input type="file" id="import-preset-input" accept=".json" hidden>
   <div id="update-notice-modal">
@@ -7441,14 +6927,6 @@
                 <input type="number" id="gr-context-limit" class="gr-input" value="20">
             </div>
 
-            <div class="gr-form-group">
-                <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer;">
-                    <span>💬 生成时开启读者评论</span>
-                    <input type="checkbox" id="gr-reader-comments-enabled" style="width: 44px; height: 24px; cursor: pointer;">
-                </label>
-                <div style="font-size: 12px; color: #999; margin-top: 5px;">续写或追更时，AI 会在部分段落后生成模拟读者评论，阅读时点击段尾气泡可查看</div>
-            </div>
-
             <!-- 作者追更功能 -->
             <div class="gr-form-group" style="border-top: 2px solid #E5E5E5; padding-top: 15px; margin-top: 15px;">
                 <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer;">
@@ -7741,9 +7219,15 @@
                 </div>
               </div>
               <div class="settings-item">
-                <label>服务器地址</label>
+                <label>Supabase URL</label>
                 <div class="settings-right">
-                  <input type="text" id="online-app-server-url" placeholder="wss://your-server.com/ws">
+                  <input type="text" id="online-app-supabase-url" placeholder="https://your-project.supabase.co">
+                </div>
+              </div>
+              <div class="settings-item">
+                <label>Supabase Anon Key</label>
+                <div class="settings-right">
+                  <input type="password" id="online-app-supabase-key" placeholder="your-anon-key">
                 </div>
               </div>
               <div class="settings-item">
@@ -8552,130 +8036,7 @@
 })();
 </script>
 
-<script>
-// ==================== EPhone 验证系统 ====================
-(function() {
-  'use strict';
 
-  const AUTH_KEY = 'ephone_auth';
-  const introScreen = document.getElementById('intro-screen');
-  const authScreen = document.getElementById('ephone-auth-screen');
-  const phoneScreen = document.getElementById('phone-screen');
-  const accountInput = document.getElementById('ephone-account');
-  const passwordInput = document.getElementById('ephone-password');
-  const loginBtn = document.getElementById('ephone-login-btn');
-  const errorDiv = document.getElementById('ephone-auth-error');
-
-  // 验证函数
-  async function ephoneVerify() {
-    const account = accountInput.value.trim();
-    const password = passwordInput.value.trim();
-
-    // 清除之前的错误信息
-    errorDiv.textContent = '';
-
-    if (!account || !password) {
-      errorDiv.textContent = 'Please enter account and password';
-      return;
-    }
-
-    // 禁用按钮，防止重复提交
-    loginBtn.disabled = true;
-    loginBtn.textContent = 'Unlocking...';
-
-    try {
-      const res = await fetch('https://puppy-subscription-api.zeabur.app/api/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account: account, password: password })
-      });
-
-      const data = await res.json();
-
-      if (data.success) {
-        // 验证成功
-        localStorage.setItem(AUTH_KEY, 'true');
-        errorDiv.style.color = '#27ae60';
-        errorDiv.textContent = 'Unlocked!';
-        
-        // 添加淡出动画
-        authScreen.classList.add('fade-out');
-        
-        // 等待动画完成后隐藏验证界面
-        setTimeout(() => {
-          authScreen.classList.add('hidden');
-          phoneScreen.style.display = 'block';
-        }, 500);
-      } else {
-        // 验证失败
-        errorDiv.style.color = '#ff6b81';
-        errorDiv.textContent = 'Failed: ' + (data.message || 'Wrong Account or Password');
-        loginBtn.disabled = false;
-        loginBtn.textContent = 'Unlock!';
-      }
-    } catch (error) {
-      console.error('验证请求失败:', error);
-      errorDiv.style.color = '#ff6b81';
-      errorDiv.textContent = 'Network Error';
-      loginBtn.disabled = false;
-      loginBtn.textContent = 'Unlock!';
-    }
-  }
-
-  // 检查验证状态
-  function checkAuthStatus() {
-    const isAuthenticated = localStorage.getItem(AUTH_KEY) === 'true';
-    
-    if (isAuthenticated) {
-      // 已验证，隐藏所有验证相关界面
-      introScreen.style.display = 'none';
-      authScreen.classList.add('hidden');
-      phoneScreen.style.display = 'block';
-    } else {
-      // 未验证，显示开场动画，隐藏主界面
-      introScreen.classList.remove('hidden');
-      authScreen.classList.add('hidden');
-      phoneScreen.style.display = 'none';
-      
-      // 绑定开场动画点击事件
-      introScreen.addEventListener('click', () => {
-        introScreen.classList.add('hidden');
-        setTimeout(() => {
-            introScreen.style.display = 'none';
-            authScreen.classList.remove('hidden');
-        }, 500);
-      });
-    }
-  }
-
-  // 绑定事件
-  loginBtn.addEventListener('click', ephoneVerify);
-
-  // 支持回车键提交
-  passwordInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-      ephoneVerify();
-    }
-  });
-
-  accountInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-      passwordInput.focus();
-    }
-  });
-
-  // 页面加载时检查验证状态
-  checkAuthStatus();
-
-  // 可选：添加退出登录功能（可以在设置中调用）
-  window.ephoneLogout = function() {
-    localStorage.removeItem(AUTH_KEY);
-    location.reload();
-  };
-
-  console.log('EPhone 验证系统已初始化');
-})();
-</script>
 
 </body>
 </html>

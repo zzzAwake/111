@@ -109,11 +109,11 @@ class HelperAssistant {
           </span>
           <span class="helper-menu-text">私信作者</span>
         </div>
-        <div class="helper-menu-item" data-action="declaration">
+        <div class="helper-menu-item helper-menu-disabled">
           <span class="helper-menu-icon">
-            <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+            <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
           </span>
-          <span class="helper-menu-text">声明</span>
+          <span class="helper-menu-text">下次更新</span>
         </div>
         <div class="helper-menu-item" data-action="hide">
           <span class="helper-menu-icon">
@@ -271,75 +271,12 @@ class HelperAssistant {
       case 'dm':
         window.open(this.discordDmUrl, '_blank');
         break;
-      case 'declaration':
-        this.showDeclaration();
-        break;
       case 'hide':
         this.hideAssistant();
         break;
       default:
         break;
     }
-  }
-
-  // 显示声明弹窗
-  showDeclaration() {
-    // 检查是否已存在弹窗
-    if (document.getElementById('declaration-modal-overlay')) {
-      return;
-    }
-
-    const overlay = document.createElement('div');
-    overlay.id = 'declaration-modal-overlay';
-    overlay.innerHTML = `
-      <div class="declaration-modal">
-        <div class="declaration-header">
-          <h2>项目声明</h2>
-          <button class="declaration-close-btn" onclick="this.closest('#declaration-modal-overlay').remove()">×</button>
-        </div>
-        <div class="declaration-content">
-          <div class="declaration-section">
-            <h3>📜 版权说明</h3>
-            <p>本项目由EE老师原创，后经JCY老师、KUKU老师、330老师等多位老师共同改版发展。</p>
-            <p>本人在各位老师的基础上进行了进一步的调整。</p>
-            <p style="font-size: 13px; color: #999; margin-top: 10px;">（可能还有其他贡献者未能一一列出，在此一并致谢）</p>
-          </div>
-          
-          <div class="declaration-section">
-            <h3>⚠️ 免责声明</h3>
-            <p>本项目中涉及的所有音乐、影视等内容的版权归原作者所有。</p>
-            <p>本项目仅供学习交流使用，不得用于商业用途。</p>
-            <p>使用本项目产生的任何法律责任由使用者自行承担，与开发者无关。</p>
-          </div>
-          
-          <div class="declaration-section">
-            <h3>🔒 隐私声明</h3>
-            <p>本项目不会收集、存储或传播任何用户的个人信息。</p>
-            <p>所有数据均存储在用户本地浏览器中。</p>
-          </div>
-          
-          <div class="declaration-footer">
-            <p>感谢所有为本项目做出贡献的老师们！</p>
-            <p style="margin-top: 10px; font-size: 12px; color: #999;">最后更新：2026年2月</p>
-          </div>
-        </div>
-      </div>
-    `;
-
-    document.body.appendChild(overlay);
-
-    // 添加动画
-    setTimeout(() => {
-      overlay.classList.add('show');
-    }, 10);
-
-    // 点击遮罩层关闭
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) {
-        overlay.classList.remove('show');
-        setTimeout(() => overlay.remove(), 300);
-      }
-    });
   }
 
   // 保存位置到localStorage
@@ -546,152 +483,6 @@ style.textContent = `
 
     .helper-menu-item.helper-menu-disabled .helper-menu-text {
       color: #666;
-    }
-  }
-
-  /* 声明弹窗样式 */
-  #declaration-modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(0, 0, 0, 0.5);
-    backdrop-filter: blur(5px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 10000;
-    opacity: 0;
-    transition: opacity 0.3s ease;
-  }
-
-  #declaration-modal-overlay.show {
-    opacity: 1;
-  }
-
-  .declaration-modal {
-    background: white;
-    border-radius: 20px;
-    max-width: 500px;
-    width: 90%;
-    max-height: 80vh;
-    overflow: hidden;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
-    transform: scale(0.9);
-    transition: transform 0.3s ease;
-  }
-
-  #declaration-modal-overlay.show .declaration-modal {
-    transform: scale(1);
-  }
-
-  .declaration-header {
-    background: linear-gradient(135deg, #FFB7C5 0%, #FF9AA2 100%);
-    padding: 20px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    color: white;
-  }
-
-  .declaration-header h2 {
-    margin: 0;
-    font-size: 20px;
-    font-weight: 600;
-  }
-
-  .declaration-close-btn {
-    background: rgba(255, 255, 255, 0.2);
-    border: none;
-    color: white;
-    font-size: 28px;
-    width: 36px;
-    height: 36px;
-    border-radius: 50%;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.2s;
-    line-height: 1;
-  }
-
-  .declaration-close-btn:hover {
-    background: rgba(255, 255, 255, 0.3);
-    transform: rotate(90deg);
-  }
-
-  .declaration-content {
-    padding: 25px;
-    overflow-y: auto;
-    max-height: calc(80vh - 80px);
-  }
-
-  .declaration-section {
-    margin-bottom: 25px;
-  }
-
-  .declaration-section:last-child {
-    margin-bottom: 0;
-  }
-
-  .declaration-section h3 {
-    color: #FF69B4;
-    font-size: 16px;
-    margin: 0 0 12px 0;
-    font-weight: 600;
-  }
-
-  .declaration-section p {
-    color: #555;
-    line-height: 1.6;
-    margin: 8px 0;
-    font-size: 14px;
-  }
-
-  .declaration-section ul {
-    margin: 10px 0;
-    padding-left: 20px;
-  }
-
-  .declaration-section li {
-    color: #555;
-    line-height: 1.8;
-    margin: 5px 0;
-    font-size: 14px;
-  }
-
-  .declaration-section li strong {
-    color: #FF69B4;
-  }
-
-  .declaration-footer {
-    margin-top: 20px;
-    padding-top: 20px;
-    border-top: 1px solid #f0f0f0;
-    text-align: center;
-  }
-
-  .declaration-footer p {
-    color: #FF69B4;
-    font-weight: 500;
-    margin: 5px 0;
-  }
-
-  /* 暗黑模式适配 - 声明弹窗 */
-  @media (prefers-color-scheme: dark) {
-    .declaration-modal {
-      background: #2D2D2D;
-    }
-
-    .declaration-section p,
-    .declaration-section li {
-      color: #e0e0e0;
-    }
-
-    .declaration-footer {
-      border-top-color: #444;
     }
   }
 `;
